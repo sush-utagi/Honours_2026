@@ -1,0 +1,3 @@
+[submodule "stable-diffusion"]
+	path = stable-diffusion
+	url = https://github.com/sush-utagi/pytorch-stable-diffusion.git
