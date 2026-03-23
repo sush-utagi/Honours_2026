@@ -60,6 +60,10 @@ tmp/
 wandb/
 mlruns/
 
+# Diffusion model resources (large / downloaded artifacts)
+diffusion-model/data/*
+data-generation-outputs/*
+
 checkpoints/
 models/
 weights/
