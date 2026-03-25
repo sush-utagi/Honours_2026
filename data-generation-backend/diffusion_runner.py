@@ -28,13 +28,13 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with the local SD v1.5 diffusion model.")
     parser.add_argument("--prompt", required=True, help="Text prompt.")
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
-    parser.add_argument("--outdir", default=None, help="Output directory (default: data-generation-outputs/diffusion).")
+    parser.add_argument("--outdir", default=None, help="Output directory (default: data-generation-outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
     parser.add_argument(
         "--seed",
         type=int,
         default=None,
-        help="Base seed (each image increments by 1). If omitted, uses a random seed.",
+        help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",
     )
     parser.add_argument("--steps", type=int, default=20, help="Number of inference steps.")
     parser.add_argument("--sampler", default="ddpm", help="Sampler name (only 'ddpm' is supported by this repo).")
@@ -59,7 +59,7 @@ def main() -> int:
         missing_str = ", ".join(str(p) for p in missing)
         raise FileNotFoundError(
             f"Missing diffusion resources: {missing_str}. "
-            "Run ./download_sd15_resources.sh to download them."
+            "Run ./get_resources.sh to download them."
         )
 
     if str(sd_dir) not in sys.path:
@@ -74,15 +74,20 @@ def main() -> int:
     tokenizer = CLIPTokenizer(str(vocab_path), merges_file=str(merges_path))
     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
 
-    outdir = Path(args.outdir) if args.outdir else (repo_root / "data-generation-outputs" / "diffusion")
-    outdir.mkdir(parents=True, exist_ok=True)
-
     input_image = Image.open(args.init_image) if args.init_image else None
     do_cfg = not args.no_cfg
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    outdir = Path(args.outdir) if args.outdir else (repo_root / "data-generation-outputs")
+    run_outdir = (outdir / timestamp) if args.num_images > 1 else outdir
+    run_outdir.mkdir(parents=True, exist_ok=True)
+
+    seed_base = args.seed
+    if seed_base is None:
+        seed_base = int(torch.randint(0, 2**31 - 1, (1,)).item())
+
     for i in range(args.num_images):
-        seed = (args.seed + i) if args.seed is not None else None
+        seed = seed_base + i
         output_array = pipeline.generate(
             prompt=args.prompt,
             uncond_prompt=args.negative_prompt,
@@ -99,8 +104,8 @@ def main() -> int:
             tokenizer=tokenizer,
         )
         image = Image.fromarray(output_array)
-        seed_suffix = f"seed{seed}" if seed is not None else "seed_random"
-        outpath = outdir / f"sd15_{timestamp}_{seed_suffix}.png"
+        seed_suffix = f"seed{seed}"
+        outpath = run_outdir / f"{timestamp}_{seed_suffix}.png"
         image.save(outpath)
         print(f"Wrote {outpath}")
 
