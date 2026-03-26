@@ -5,6 +5,8 @@
 .Trashes
 ehthumbs.db
 Thumbs.db
+.env
+coco_dataset/
 
 .vscode/
 .idea/
@@ -76,3 +78,4 @@ weights/
 *.h5
 
 .local/
+.cache/
