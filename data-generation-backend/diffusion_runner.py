@@ -39,6 +39,16 @@ def main() -> int:
     parser.add_argument("--steps", type=int, default=20, help="Number of inference steps.")
     parser.add_argument("--sampler", default="ddpm", help="Sampler name (only 'ddpm' is supported by this repo).")
     parser.add_argument("--cfg-scale", type=float, default=8.0, help="Classifier-free guidance scale.")
+    parser.add_argument(
+        "--sweep-cfg",
+        action="store_true",
+        help="Sweep integer cfg scales 5–13 (inclusive) across images (requires at least 9 images; remainder is distributed unevenly).",
+    )
+    parser.add_argument(
+        "--sweep-num-steps",
+        action="store_true",
+        help="Sweep inference steps 10–50 in increments of 5 across images (requires at least 9 images; remainder is distributed unevenly). When combined with --sweep-cfg, performs a full cfg/steps grid (9×9).",
+    )
     parser.add_argument("--no-cfg", action="store_true", help="Disable classifier-free guidance.")
     parser.add_argument("--strength", type=float, default=0.9, help="img2img strength (0-1). Ignored for txt2img.")
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")
@@ -86,7 +96,43 @@ def main() -> int:
     if seed_base is None:
         seed_base = int(torch.randint(0, 2**31 - 1, (1,)).item())
 
-    for i in range(args.num_images):
+    cfg_levels = [float(cfg) for cfg in range(5, 14)]          # 5…13
+    step_levels = list(range(10, 51, 5))                       # 10,15,…,50
+
+    if args.sweep_cfg and args.sweep_num_steps:
+        grid = [(c, s) for c in cfg_levels for s in step_levels]  # cartesian grid
+        grid_size = len(grid)
+        if args.num_images < grid_size:
+            raise ValueError(
+                f"--sweep-cfg and --sweep-num-steps together require at least {grid_size} images to cover all cfg/step pairs once."
+            )
+        repeats = (args.num_images + grid_size - 1) // grid_size
+        schedule = (grid * repeats)[: args.num_images]
+        cfg_schedule = [c for c, _ in schedule]
+        steps_schedule = [s for _, s in schedule]
+        if args.no_cfg:
+            raise ValueError("--sweep-cfg cannot be combined with --no-cfg.")
+    elif args.sweep_cfg:
+        sweep_steps = len(cfg_levels)
+        if args.num_images < sweep_steps:
+            raise ValueError(f"--sweep-cfg requires at least {sweep_steps} images to cover integer cfg 5–13 evenly.")
+        if args.no_cfg:
+            raise ValueError("--sweep-cfg cannot be combined with --no-cfg.")
+        repeats = (args.num_images + sweep_steps - 1) // sweep_steps
+        cfg_schedule = (cfg_levels * repeats)[: args.num_images]
+        steps_schedule = [args.steps] * args.num_images
+    elif args.sweep_num_steps:
+        step_count = len(step_levels)
+        if args.num_images < step_count:
+            raise ValueError(f"--sweep-num-steps requires at least {step_count} images to cover step counts 10–50.")
+        repeats_steps = (args.num_images + step_count - 1) // step_count
+        steps_schedule = (step_levels * repeats_steps)[: args.num_images]
+        cfg_schedule = [args.cfg_scale] * args.num_images
+    else:
+        cfg_schedule = [args.cfg_scale] * args.num_images
+        steps_schedule = [args.steps] * args.num_images
+
+    for i, (cfg_scale, n_steps) in enumerate(zip(cfg_schedule, steps_schedule)):
         seed = seed_base + i
         output_array = pipeline.generate(
             prompt=args.prompt,
@@ -94,9 +140,9 @@ def main() -> int:
             input_image=input_image,
             strength=args.strength,
             do_cfg=do_cfg,
-            cfg_scale=args.cfg_scale,
+            cfg_scale=cfg_scale,
             sampler_name=args.sampler,
-            n_inference_steps=args.steps,
+            n_inference_steps=n_steps,
             seed=seed,
             models=models,
             device=device,
@@ -105,7 +151,9 @@ def main() -> int:
         )
         image = Image.fromarray(output_array)
         seed_suffix = f"seed{seed}"
-        outpath = run_outdir / f"{timestamp}_{seed_suffix}.png"
+        cfg_suffix = f"cfg{cfg_scale:.1f}"
+        steps_suffix = f"steps{n_steps}"
+        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}.png"
         image.save(outpath)
         print(f"Wrote {outpath}")
 
