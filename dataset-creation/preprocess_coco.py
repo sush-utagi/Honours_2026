@@ -1,7 +1,7 @@
 """Contextual cropping of MS COCO 2017 to single-object 512x512 crops.
 
-For each annotation, this script centers a 512x512 window on the object,
-zero-pads if the window runs off the image border, saves the crop, and writes
+For each annotation, this script centers a dynamic window on the object,
+mean-pads if the crop runs off the image border, saves the crop, and writes
 COCO-format annotations with exactly one bounding box per output image.
 """
 
@@ -20,54 +20,98 @@ from tqdm import tqdm
 
 
 WINDOW = 512
+BBOX_BUFFER = 0.1
+ZOOM_MARGIN = 1.5  # crop side = max(bbox width/height) * ZOOM_MARGIN
 
 
 def _contextual_crop(
-    image: np.ndarray, bbox: List[float], window: int = WINDOW
+    image: np.ndarray,
+    bbox: List[float],
+    window: int = WINDOW,
+    buffer: float = BBOX_BUFFER,
+    zoom_margin: float = ZOOM_MARGIN,
 ) -> Tuple[np.ndarray, List[float]]:
-    """Return padded 512x512 crop centered on the bbox and the remapped bbox.
+    """Return a padded crop centered on the object and the remapped bbox.
 
-    The crop origin is the top-left of the window; padding is filled with zeros.
-    Bounding box is clamped to the crop bounds.
+    Dynamic crop side = max(bbox width, bbox height) * zoom_margin (falls back
+    gracefully for tiny or oversized objects). The crop is mean-padded if it
+    extends beyond the image, resized to `window` (default 512), and the bbox is
+    scaled and expanded by `buffer`.
     """
 
     h, w, _ = image.shape
     x, y, bw, bh = bbox
 
+    # Center and dynamic crop size.
     cx = x + bw / 2.0
     cy = y + bh / 2.0
-    half = window // 2
+    dyn_side = max(bw, bh) * max(zoom_margin, 1e-6)
+    if dyn_side <= 0:
+        dyn_side = min(h, w)
+    # If requested window exceeds the image, cap to the largest reasonable square.
+    dyn_side = max(2.0, dyn_side)
+    eff_side = int(math.ceil(dyn_side))
 
+    half = eff_side / 2.0
     left = int(math.floor(cx - half))
     top = int(math.floor(cy - half))
-    right = left + window
-    bottom = top + window
+    right = left + eff_side
+    bottom = top + eff_side
 
     pad_left = max(0, -left)
     pad_top = max(0, -top)
+    pad_right = max(0, right - w)
+    pad_bottom = max(0, bottom - h)
 
-    crop = np.zeros((window, window, 3), dtype=np.uint8)
+    # Mean padding to avoid harsh borders.
+    pad_value = np.round(image.reshape(-1, image.shape[2]).mean(axis=0)).astype(image.dtype)
+    padded = np.empty(
+        (h + pad_top + pad_bottom, w + pad_left + pad_right, image.shape[2]),
+        dtype=image.dtype,
+    )
+    padded[...] = pad_value
+    padded[pad_top : pad_top + h, pad_left : pad_left + w] = image
 
-    src_x1 = max(0, left)
-    src_y1 = max(0, top)
-    src_x2 = min(w, right)
-    src_y2 = min(h, bottom)
+    # Shift crop window into padded coordinates.
+    top_p = top + pad_top
+    left_p = left + pad_left
+    crop = padded[top_p : top_p + eff_side, left_p : left_p + eff_side]
 
-    dst_x1 = pad_left
-    dst_y1 = pad_top
-    dst_x2 = dst_x1 + (src_x2 - src_x1)
-    dst_y2 = dst_y1 + (src_y2 - src_y1)
+    # Bbox in crop coordinates (pre-buffer, pre-resize).
+    x1 = x - left
+    y1 = y - top
+    x2 = x1 + bw
+    y2 = y1 + bh
 
-    crop[dst_y1:dst_y2, dst_x1:dst_x2] = image[src_y1:src_y2, src_x1:src_x2]
+    # Resize crop to fixed output window.
+    scale = window / float(eff_side)
+    crop_img = Image.fromarray(crop).resize((window, window), resample=Image.BILINEAR)
+    crop = np.array(crop_img, dtype=image.dtype)
 
-    x1_new = max(0.0, min(float(window), x - left))
-    y1_new = max(0.0, min(float(window), y - top))
-    x2_new = max(0.0, min(float(window), x + bw - left))
-    y2_new = max(0.0, min(float(window), y + bh - top))
-    w_new = max(0.0, x2_new - x1_new)
-    h_new = max(0.0, y2_new - y1_new)
+    # Scale bbox to output size.
+    x1 *= scale
+    y1 *= scale
+    x2 *= scale
+    y2 *= scale
 
-    return crop, [x1_new, y1_new, w_new, h_new]
+    # Apply buffer on scaled bbox.
+    bw_scaled = x2 - x1
+    bh_scaled = y2 - y1
+    x1_buf = x1 - bw_scaled * buffer
+    y1_buf = y1 - bh_scaled * buffer
+    x2_buf = x2 + bw_scaled * buffer
+    y2_buf = y2 + bh_scaled * buffer
+
+    # Clamp to output window.
+    x1_cl = max(0.0, min(float(window), x1_buf))
+    y1_cl = max(0.0, min(float(window), y1_buf))
+    x2_cl = max(0.0, min(float(window), x2_buf))
+    y2_cl = max(0.0, min(float(window), y2_buf))
+
+    w_new = max(0.0, x2_cl - x1_cl)
+    h_new = max(0.0, y2_cl - y1_cl)
+
+    return crop, [x1_cl, y1_cl, w_new, h_new]
 
 
 def _process_split(
@@ -75,6 +119,7 @@ def _process_split(
     input_root: Path,
     output_root: Path,
     window: int = WINDOW,
+    zoom_margin: float = ZOOM_MARGIN,
 ) -> None:
     ann_path = input_root / "annotations" / f"instances_{split}.json"
     if not ann_path.exists():
@@ -116,7 +161,9 @@ def _process_split(
             ann = coco.loadAnns([ann_id])[0]
             bbox = ann.get("bbox", [0, 0, 0, 0])
 
-            crop_np, new_bbox = _contextual_crop(img_np, bbox, window)
+            crop_np, new_bbox = _contextual_crop(
+                img_np, bbox, window=window, buffer=BBOX_BUFFER, zoom_margin=zoom_margin
+            )
             if new_bbox[2] <= 0 or new_bbox[3] <= 0:
                 continue
 
@@ -187,6 +234,12 @@ def main() -> None:
         help="Crop window size (pixels); must be even",
     )
     parser.add_argument(
+        "--zoom-margin",
+        default=ZOOM_MARGIN,
+        type=float,
+        help="Dynamic crop side = max(bbox w,h) * zoom_margin (e.g., 1.5)",
+    )
+    parser.add_argument(
         "--splits",
         nargs="*",
         default=["train", "val"],
@@ -196,7 +249,7 @@ def main() -> None:
     args = parser.parse_args()
 
     for split in args.splits:
-        _process_split(split, args.input_root, args.output_root, args.window)
+        _process_split(split, args.input_root, args.output_root, args.window, args.zoom_margin)
 
 
 if __name__ == "__main__":

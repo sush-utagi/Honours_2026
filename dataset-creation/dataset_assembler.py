@@ -61,8 +61,15 @@ class MultiClassDataset(Dataset):
 class HybridDatasetAssembler:
     """Assemble COCO multiclass datasets with optional synthetic injection."""
 
-    def __init__(self, coco_root: str = "coco_dataset/split", seed: int = 42):
+    def __init__(
+        self,
+        coco_root: str = "coco_dataset/split",
+        contextual_root: str = "coco_dataset/contextual_crops",
+        seed: int = 42,
+    ):
+        # Raw COCO root (used for test split fallback) and contextual crops root (preferred for train/val)
         self.coco_root = Path(coco_root)
+        self.contextual_root = Path(contextual_root)
         self.seed = seed
         random.seed(seed)
         self.cat_id_to_idx: Dict[int, int] = {}
@@ -82,18 +89,13 @@ class HybridDatasetAssembler:
         splits: Dict[str, List[Sample]] = {"train": [], "val": [], "test": []}
 
         # Build category mapping from train annotations (authoritative)
-        train_instances = self.coco_root / "annotations" / "instances_train.json"
-        if not train_instances.exists():
-            raise FileNotFoundError(f"Missing COCO annotations: {train_instances}")
+        train_instances, _ = self._paths_for_split("train")
         coco_train = COCO(str(train_instances))
         self._build_category_mapping(coco_train)
 
         # Load real COCO data for each split
         for split in ["train", "val", "test"]:
-            instances_path = self.coco_root / "annotations" / f"instances_{split}.json"
-            images_dir = self.coco_root / "images" / split
-            if not instances_path.exists():
-                raise FileNotFoundError(f"Missing COCO annotations: {instances_path}")
+            instances_path, images_dir = self._paths_for_split(split)
             coco = COCO(str(instances_path))
             samples = self._collect_coco_samples(coco, images_dir)
             splits[split].extend(samples)
@@ -184,6 +186,28 @@ class HybridDatasetAssembler:
         train_samples = [Sample(path=p, label=target_idx, synthetic=True) for p in train_paths]
         val_samples = [Sample(path=p, label=target_idx, synthetic=True) for p in val_paths]
         return train_samples, val_samples
+
+    def _paths_for_split(self, split: str) -> Tuple[Path, Path]:
+        """Return (annotations_path, images_dir) preferring contextual crops for train/val."""
+
+        # Prefer contextual crops when available.
+        contextual_ann = self.contextual_root / "annotations" / f"single_instances_{split}.json"
+        contextual_imgs = self.contextual_root / "images" / split
+
+        if split in {"train", "val"}:
+            if not contextual_ann.exists():
+                raise FileNotFoundError(
+                    f"Missing contextual crop annotations for '{split}' at {contextual_ann}. "
+                    "Run dataset-creation/preprocess_coco.py to generate contextual_crops."
+                )
+            return contextual_ann, contextual_imgs
+
+        # For test (or other splits), fall back to raw COCO split.
+        ann = self.coco_root / "annotations" / f"instances_{split}.json"
+        imgs = self.coco_root / "images" / split
+        if not ann.exists():
+            raise FileNotFoundError(f"Missing COCO annotations for split '{split}': {ann}")
+        return ann, imgs
 
     def _log_distribution(self, datasets: Dict[str, MultiClassDataset], synthetic_label: Optional[str]) -> None:
         print("\nFinal dataset distribution (real vs synthetic per class)")
