@@ -1,3 +1,3 @@
 [submodule "stable-diffusion"]
-	path = diffusion-model
+	path = diffusion_model
 	url = https://github.com/sush-utagi/pytorch-stable-diffusion.git

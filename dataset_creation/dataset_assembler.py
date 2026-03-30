@@ -95,7 +95,14 @@ class HybridDatasetAssembler:
 
         # Load real COCO data for each split
         for split in ["train", "val", "test"]:
-            instances_path, images_dir = self._paths_for_split(split)
+            try:
+                instances_path, images_dir = self._paths_for_split(split)
+            except FileNotFoundError as exc:
+                if split == "test":
+                    print(f"[skip] {exc}")
+                    continue
+                raise
+
             coco = COCO(str(instances_path))
             samples = self._collect_coco_samples(coco, images_dir)
             splits[split].extend(samples)
