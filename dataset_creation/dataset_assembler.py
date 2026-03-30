@@ -106,6 +106,7 @@ class HybridDatasetAssembler:
             coco = COCO(str(instances_path))
             samples = self._collect_coco_samples(coco, images_dir)
             splits[split].extend(samples)
+            print(f"[data] loaded {len(samples):,} real samples for {split}")
 
         # Synthetic injection (train/val only)
         if synthetic_dir_name:
@@ -217,26 +218,27 @@ class HybridDatasetAssembler:
         return ann, imgs
 
     def _log_distribution(self, datasets: Dict[str, MultiClassDataset], synthetic_label: Optional[str]) -> None:
-        print("\nFinal dataset distribution (real vs synthetic per class)")
-        for split, ds in datasets.items():
-            totals = {i: {"real": 0, "synthetic": 0} for i in range(len(self.idx_to_name))}
-            for _, label, synthetic in ds:
-                if synthetic:
-                    totals[label]["synthetic"] += 1
-                else:
-                    totals[label]["real"] += 1
+        pass
+        # print("\nFinal dataset distribution (real vs synthetic per class)")
+        # for split, ds in datasets.items():
+        #     totals = {i: {"real": 0, "synthetic": 0} for i in range(len(self.idx_to_name))}
+        #     for _, label, synthetic in ds:
+        #         if synthetic:
+        #             totals[label]["synthetic"] += 1
+        #         else:
+        #             totals[label]["real"] += 1
 
-            if pd is not None:
-                df = pd.DataFrame.from_dict(totals, orient="index")
-                df["class_name"] = [self.idx_to_name[i] for i in range(len(self.idx_to_name))]
-                cols = ["class_name", "real", "synthetic"]
-                df = df[cols]
-                print(f"\n{split.upper()}:\n{df.to_string(index=False)}")
-            else:
-                print(f"\n{split.upper()}:")
-                for idx in range(len(self.idx_to_name)):
-                    name = self.idx_to_name[idx]
-                    real = totals[idx]["real"]
-                    synth = totals[idx]["synthetic"]
-                    marker = " <- synthetic target" if synthetic_label == name and synth > 0 else ""
-                    print(f"  {idx:02d} {name:20s} real={real:6d} synthetic={synth:6d}{marker}")
+        #     if pd is not None:
+        #         df = pd.DataFrame.from_dict(totals, orient="index")
+        #         df["class_name"] = [self.idx_to_name[i] for i in range(len(self.idx_to_name))]
+        #         cols = ["class_name", "real", "synthetic"]
+        #         df = df[cols]
+        #         print(f"\n{split.upper()}:\n{df.to_string(index=False)}")
+        #     else:
+        #         print(f"\n{split.upper()}:")
+        #         for idx in range(len(self.idx_to_name)):
+        #             name = self.idx_to_name[idx]
+        #             real = totals[idx]["real"]
+        #             synth = totals[idx]["synthetic"]
+        #             marker = " <- synthetic target" if synthetic_label == name and synth > 0 else ""
+        #             print(f"  {idx:02d} {name:20s} real={real:6d} synthetic={synth:6d}{marker}")

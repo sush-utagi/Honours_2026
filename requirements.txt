@@ -1,6 +1,8 @@
 ## Python version: 3.11.3
 
-torch==2.0.1
+torch==2.2.1
+torchvision==0.17.1 
+torchaudio==2.2.1
 numpy==1.25.0
 tqdm==4.65.0
 transformers==4.33.2

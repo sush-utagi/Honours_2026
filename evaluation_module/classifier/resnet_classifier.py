@@ -28,6 +28,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset, random_split
+from tqdm import tqdm
 
 
 ###############################################################################
@@ -238,10 +239,11 @@ def accuracy_from_logits(logits: torch.Tensor, targets: torch.Tensor) -> float:
 
 
 def train_one_epoch(model: nn.Module, loader: DataLoader, criterion: nn.Module, optimizer: torch.optim.Optimizer,
-                   device: torch.device) -> Tuple[float, float]:
+                   device: torch.device, progress_desc: Optional[str] = None, show_progress: bool = False) -> Tuple[float, float]:
     model.train()
     running_loss, running_acc, n_batches = 0.0, 0.0, 0
-    for images, labels in loader:
+    loop = tqdm(loader, desc=progress_desc, leave=False) if show_progress else loader
+    for images, labels in loop:
         images, labels = images.to(device), labels.to(device)
         optimizer.zero_grad()
         logits = model(images)
@@ -257,12 +259,14 @@ def train_one_epoch(model: nn.Module, loader: DataLoader, criterion: nn.Module, 
 
 
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device) -> Tuple[float, float, np.ndarray, np.ndarray]:
+def evaluate(model: nn.Module, loader: DataLoader, criterion: nn.Module, device: torch.device,
+             progress_desc: Optional[str] = None, show_progress: bool = False) -> Tuple[float, float, np.ndarray, np.ndarray]:
     model.eval()
     running_loss, running_acc, n_batches = 0.0, 0.0, 0
     all_logits: List[torch.Tensor] = []
     all_labels: List[torch.Tensor] = []
-    for images, labels in loader:
+    loop = tqdm(loader, desc=progress_desc, leave=False) if show_progress else loader
+    for images, labels in loop:
         images, labels = images.to(device), labels.to(device)
         logits = model(images)
         loss = criterion(logits, labels)
@@ -287,6 +291,7 @@ def train_model(
     lr: float = 1e-3,
     weight_decay: float = 1e-4,
     device: Optional[torch.device] = None,
+    show_progress: bool = False,
 ) -> TrainHistory:
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -295,8 +300,23 @@ def train_model(
 
     history = TrainHistory()
     for epoch in range(epochs):
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        val_loss, val_acc, _, _ = evaluate(model, val_loader, criterion, device)
+        train_loss, train_acc = train_one_epoch(
+            model,
+            train_loader,
+            criterion,
+            optimizer,
+            device,
+            progress_desc=f"Train {epoch+1}/{epochs}",
+            show_progress=show_progress,
+        )
+        val_loss, val_acc, _, _ = evaluate(
+            model,
+            val_loader,
+            criterion,
+            device,
+            progress_desc=f"Val {epoch+1}/{epochs}",
+            show_progress=show_progress,
+        )
 
         history.train_loss.append(train_loss)
         history.val_loss.append(val_loss)

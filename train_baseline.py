@@ -3,20 +3,26 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 from typing import List, Sequence
 
 import matplotlib.pyplot as plt
+
+# Encourage MPS to fall back instead of crashing when it runs out of supported ops/memory.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
+os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
+
 import torch
 from torch.utils.data import DataLoader
 
 ROOT = Path(__file__).resolve().parent
-sys.path.append(str(ROOT / "dataset-creation"))
-sys.path.append(str(ROOT / "evaluation-module" / "classifier"))
+sys.path.append(str(ROOT / "dataset_creation"))
+sys.path.append(str(ROOT / "evaluation_module" / "classifier"))
 
-from dataset_assembler import HybridDatasetAssembler
-from resnet_classifier import (
+from dataset_creation.dataset_assembler import HybridDatasetAssembler
+from evaluation_module.classifier.resnet_classifier import (
     build_resnet18,
     train_model,
     evaluate,
@@ -27,8 +33,11 @@ from resnet_classifier import (
 
 
 def select_device() -> torch.device:
-    if torch.backends.mps.is_available(): return torch.device("mps")
-    if torch.cuda.is_available(): return torch.device("cuda")
+    use_mps = os.getenv("USE_MPS", "1") == "1"
+    if use_mps and torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
     return torch.device("cpu")
 
 
@@ -82,7 +91,17 @@ def generate_gradcam_overlays(
 
 def main() -> None:
     device = select_device()
+    if device.type == "mps" and os.getenv("USE_MPS", "1") != "1":
+        print("[device] MPS available but disabled via USE_MPS=0; using CPU instead.")
     print(f"[device] using {device}")
+    if device.type == "mps":
+        print(f"[device] mps_available={torch.backends.mps.is_available()} mps_built={torch.backends.mps.is_built()}")
+        try:
+            major, minor = (int(x) for x in torch.__version__.split(".")[:2])
+            if (major, minor) < (2, 2):
+                print(f"[warn] torch {torch.__version__} has unstable MPS; upgrade to 2.2+ for better reliability.")
+        except Exception:
+            pass
 
     output_dir = ROOT / "runs" / "baseline_model_A"
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -95,20 +114,39 @@ def main() -> None:
         raise RuntimeError("Train/val splits missing from assembled dataset.")
     class_names = assembler.idx_to_name
 
+    print(f"[data] train samples: {len(train_ds):,} | val samples: {len(val_ds):,}")
+
+    # Derive loader settings per device.
+    if device.type == "mps":
+        batch_size = 32
+        num_workers = 2
+        pin_memory = False
+    elif device.type == "cuda":
+        batch_size = 64
+        num_workers = 8
+        pin_memory = True
+    else:  # cpu
+        batch_size = 32
+        num_workers = 4
+        pin_memory = False
+    persistent = num_workers > 0
+
     train_loader = DataLoader(
         train_ds,
-        batch_size=64,
+        batch_size=batch_size,
         shuffle=True,
-        num_workers=8,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
         collate_fn=collate_without_synthetic,
     )
     val_loader = DataLoader(
         val_ds,
-        batch_size=64,
+        batch_size=batch_size,
         shuffle=False,
-        num_workers=8,
-        pin_memory=True,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=persistent,
         collate_fn=collate_without_synthetic,
     )
 
@@ -121,10 +159,18 @@ def main() -> None:
         lr=1e-4,
         device=device,
         weight_decay=1e-4,
+        show_progress=True,
     )
 
     criterion = torch.nn.CrossEntropyLoss()
-    val_loss, val_acc, y_true, y_prob = evaluate(model.to(device), val_loader, criterion, device)
+    val_loss, val_acc, y_true, y_prob = evaluate(
+        model.to(device),
+        val_loader,
+        criterion,
+        device,
+        progress_desc="Val final",
+        show_progress=True,
+    )
     print(f"[val] loss={val_loss:.4f} acc={val_acc:.3f}")
 
     plot_training_curves(history, save_path=str(output_dir / "training_curves.png"))
