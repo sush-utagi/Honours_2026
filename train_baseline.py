@@ -155,11 +155,13 @@ def main() -> None:
         model,
         train_loader,
         val_loader,
-        epochs=10,
+        epochs=4,
         lr=1e-4,
         device=device,
         weight_decay=1e-4,
         show_progress=True,
+        checkpoint_dir=str(output_dir / "checkpoints"),
+        save_every=2, 
     )
 
     criterion = torch.nn.CrossEntropyLoss()

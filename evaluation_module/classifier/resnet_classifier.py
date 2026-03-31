@@ -292,12 +292,18 @@ def train_model(
     weight_decay: float = 1e-4,
     device: Optional[torch.device] = None,
     show_progress: bool = False,
+    checkpoint_dir: Optional[str] = None,
+    save_every: int = 0,
 ) -> TrainHistory:
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
 
+    if checkpoint_dir is not None:
+        os.makedirs(checkpoint_dir, exist_ok=True)
+
+    best_val_acc = -float("inf")
     history = TrainHistory()
     for epoch in range(epochs):
         train_loss, train_acc = train_one_epoch(
@@ -324,6 +330,33 @@ def train_model(
         history.val_acc.append(val_acc)
 
         print(f"Epoch {epoch+1}/{epochs}: train_loss={train_loss:.4f} val_loss={val_loss:.4f} train_acc={train_acc:.3f} val_acc={val_acc:.3f}")
+
+        if checkpoint_dir is not None:
+            is_best = val_acc > best_val_acc
+            if is_best:
+                best_val_acc = val_acc
+            ckpt = {
+                "epoch": epoch + 1,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "train_loss": train_loss,
+                "val_loss": val_loss,
+                "train_acc": train_acc,
+                "val_acc": val_acc,
+                "best_val_acc": best_val_acc,
+            }
+            # Save last every epoch
+            last_path = os.path.join(checkpoint_dir, "last.pt")
+            torch.save(ckpt, last_path)
+            # Save best
+            if is_best:
+                best_path = os.path.join(checkpoint_dir, "best.pt")
+                torch.save(ckpt, best_path)
+                print(f"[ckpt] saved best checkpoint to {best_path} (val_acc={val_acc:.3f})")
+            # Optional periodic checkpoints
+            if save_every and (epoch + 1) % save_every == 0:
+                epoch_path = os.path.join(checkpoint_dir, f"epoch_{epoch+1:03d}.pt")
+                torch.save(ckpt, epoch_path)
 
     return history
 
