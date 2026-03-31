@@ -80,3 +80,6 @@ weights/
 
 .local/
 .cache/
+
+test_best.py
+gui/

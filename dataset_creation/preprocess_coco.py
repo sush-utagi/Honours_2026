@@ -10,6 +10,8 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import random
+import shutil
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -213,6 +215,165 @@ def _process_split(
     )
 
 
+def _repartition_train_val(
+    output_root: Path,
+    val_ratio: float,
+    seed: int,
+) -> None:
+    """Create a stratified val split from train and promote old val to test.
+
+    - Reads contextual crops: single_instances_train.json / single_instances_val.json
+    - Moves old val images -> images/test and writes single_instances_test.json
+    - Stratifies the train split per category to carve out a new val portion,
+      preserving class balance; moves those images to images/val and rewrites
+      single_instances_train.json / single_instances_val.json with fresh ids.
+    """
+
+    train_ann_path = output_root / "annotations" / "single_instances_train.json"
+    val_ann_path = output_root / "annotations" / "single_instances_val.json"
+
+    if not train_ann_path.exists() or not val_ann_path.exists():
+        print("[warn] Cannot repartition: missing contextual train/val annotations.")
+        return
+
+    with open(train_ann_path, "r", encoding="utf-8") as f:
+        train_data = json.load(f)
+    with open(val_ann_path, "r", encoding="utf-8") as f:
+        val_data = json.load(f)
+
+    categories = train_data.get("categories", [])
+    licenses = train_data.get("licenses", [])
+
+    train_dir = output_root / "images" / "train"
+    val_dir = output_root / "images" / "val"
+    test_dir = output_root / "images" / "test"
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    # Promote old val -> test
+    test_images = []
+    test_annotations = []
+    next_img_id = 1
+    next_ann_id = 1
+    img_map_val = {img["id"]: img for img in val_data.get("images", [])}
+    for ann in val_data.get("annotations", []):
+        img = img_map_val.get(ann["image_id"])
+        if not img:
+            continue
+        fname = img["file_name"]
+        src = val_dir / fname
+        dst = test_dir / fname
+        if src.exists():
+            shutil.move(src, dst)
+        new_img = {"id": next_img_id, "file_name": fname, "width": img["width"], "height": img["height"]}
+        new_ann = {
+            "id": next_ann_id,
+            "image_id": next_img_id,
+            "category_id": ann["category_id"],
+            "bbox": ann["bbox"],
+            "area": ann.get("area", 0.0),
+            "iscrowd": ann.get("iscrowd", 0),
+            "segmentation": [],
+        }
+        test_images.append(new_img)
+        test_annotations.append(new_ann)
+        next_img_id += 1
+        next_ann_id += 1
+
+    test_json = {
+        "info": {"description": "Contextual crops (test from original val)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": test_images,
+        "annotations": test_annotations,
+    }
+    with open(output_root / "annotations" / "single_instances_test.json", "w", encoding="utf-8") as f:
+        json.dump(test_json, f)
+
+    # Stratified carve-out: train -> new val
+    rng = random.Random(seed)
+    img_map_train = {img["id"]: img for img in train_data.get("images", [])}
+    by_cat: Dict[int, List[Tuple[Dict, Dict]]] = {}
+    for ann in train_data.get("annotations", []):
+        img = img_map_train.get(ann["image_id"])
+        if img is None:
+            continue
+        by_cat.setdefault(ann["category_id"], []).append((img, ann))
+
+    selected_val: List[Tuple[Dict, Dict]] = []
+    remaining_train: List[Tuple[Dict, Dict]] = []
+    for cat, items in by_cat.items():
+        rng.shuffle(items)
+        val_count = int(round(len(items) * val_ratio))
+        if val_count == 0 and len(items) > 0:
+            val_count = 1  # guarantee at least one when available
+        selected_val.extend(items[:val_count])
+        remaining_train.extend(items[val_count:])
+
+    # Move files and reindex
+    def _reindex_and_move(pairs: List[Tuple[Dict, Dict]], dest_dir: Path, start_img_id: int = 1, start_ann_id: int = 1):
+        images_out = []
+        annotations_out = []
+        img_id = start_img_id
+        ann_id = start_ann_id
+        for img, ann in pairs:
+            fname = img["file_name"]
+            src = train_dir / fname
+            dst = dest_dir / fname
+            if src.exists() and src != dst:
+                shutil.move(src, dst)
+            images_out.append({"id": img_id, "file_name": fname, "width": img["width"], "height": img["height"]})
+            annotations_out.append(
+                {
+                    "id": ann_id,
+                    "image_id": img_id,
+                    "category_id": ann["category_id"],
+                    "bbox": ann["bbox"],
+                    "area": ann.get("area", 0.0),
+                    "iscrowd": ann.get("iscrowd", 0),
+                    "segmentation": [],
+                }
+            )
+            img_id += 1
+            ann_id += 1
+        return images_out, annotations_out
+
+    # Clear and recreate val dir for new split
+    if val_dir.exists():
+        shutil.rmtree(val_dir)
+    val_dir.mkdir(parents=True, exist_ok=True)
+    train_dir.mkdir(parents=True, exist_ok=True)
+
+    train_images, train_annotations = _reindex_and_move(remaining_train, train_dir)
+    val_images, val_annotations = _reindex_and_move(selected_val, val_dir)
+
+    train_json = {
+        "info": {"description": "Contextual crops (train, rebalanced)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": train_images,
+        "annotations": train_annotations,
+    }
+    val_json = {
+        "info": {"description": "Contextual crops (val from train, stratified)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": val_images,
+        "annotations": val_annotations,
+    }
+
+    with open(train_ann_path, "w", encoding="utf-8") as f:
+        json.dump(train_json, f)
+    with open(val_ann_path, "w", encoding="utf-8") as f:
+        json.dump(val_json, f)
+
+    print(
+        f"[repartition] train images: {len(train_images)}, val images: {len(val_images)}, "
+        f"test images (from old val): {len(test_images)}"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Contextual crops from COCO annotations")
     parser.add_argument(
@@ -245,11 +406,30 @@ def main() -> None:
         default=["train", "val"],
         help="Dataset splits to process",
     )
+    parser.add_argument(
+        "--stratify-train-to-val",
+        action="store_true",
+        help="Create a new val split stratified from train, and promote original val to test.",
+    )
+    parser.add_argument(
+        "--val-ratio-from-train",
+        type=float,
+        default=0.1,
+        help="Fraction of train (per class) to use for the new val split (default: 0.1).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for stratified splitting (default: 42).",
+    )
 
     args = parser.parse_args()
 
     for split in args.splits:
         _process_split(split, args.input_root, args.output_root, args.window, args.zoom_margin)
+    if args.stratify_train_to_val:
+        _repartition_train_val(args.output_root, args.val_ratio_from_train, args.seed)
 
 
 if __name__ == "__main__":

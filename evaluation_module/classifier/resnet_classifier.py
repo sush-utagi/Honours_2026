@@ -294,25 +294,30 @@ def train_model(
     show_progress: bool = False,
     checkpoint_dir: Optional[str] = None,
     save_every: int = 0,
+    start_epoch: int = 0,
+    optimizer_state: Optional[dict] = None,
+    best_val_acc_init: Optional[float] = None,
 ) -> TrainHistory:
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
     criterion = nn.CrossEntropyLoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if optimizer_state is not None:
+        optimizer.load_state_dict(optimizer_state)
 
     if checkpoint_dir is not None:
         os.makedirs(checkpoint_dir, exist_ok=True)
 
-    best_val_acc = -float("inf")
+    best_val_acc = best_val_acc_init if best_val_acc_init is not None else -float("inf")
     history = TrainHistory()
-    for epoch in range(epochs):
+    for epoch in range(start_epoch, start_epoch + epochs):
         train_loss, train_acc = train_one_epoch(
             model,
             train_loader,
             criterion,
             optimizer,
             device,
-            progress_desc=f"Train {epoch+1}/{epochs}",
+            progress_desc=f"Train {epoch+1}/{start_epoch + epochs}",
             show_progress=show_progress,
         )
         val_loss, val_acc, _, _ = evaluate(
@@ -320,7 +325,7 @@ def train_model(
             val_loader,
             criterion,
             device,
-            progress_desc=f"Val {epoch+1}/{epochs}",
+            progress_desc=f"Val {epoch+1}/{start_epoch + epochs}",
             show_progress=show_progress,
         )
 

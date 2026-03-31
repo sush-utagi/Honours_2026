@@ -98,7 +98,8 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str):
             "Install it with `pip install diffusers` or unset USE_HG_DIFFUSERS."
         ) from exc
 
-    model_id = os.getenv("HF_DIFFUSERS_MODEL_ID", "runwayml/stable-diffusion-v1-5")
+    model_id_env = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip()
+    model_id = model_id_env or "runwayml/stable-diffusion-v1-5"
     # MPS can produce black outputs with float16; keep fp16 only on CUDA, fp32 elsewhere.
     torch_dtype = torch.float16 if device == "cuda" else torch.float32
     safety_enabled = _env_flag("ENABLE_SAFETY_CHECKER")
@@ -188,8 +189,8 @@ def _generate_with_local_sd(
     timestamp: str,
     input_image: Image.Image | None,
 ):
-    sd_dir = repo_root / "diffusion_model" / "sd"
-    data_dir = repo_root / "diffusion_model" / "data"
+    sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
+    data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
 
     vocab_path = data_dir / "vocab.json"
     merges_path = data_dir / "merges.txt"
@@ -244,7 +245,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
     parser.add_argument("--prompt", required=True, help="Text prompt.")
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
-    parser.add_argument("--outdir", default=None, help="Output directory (default: data-generation-outputs).")
+    parser.add_argument("--outdir", default=None, help="Output directory (default: data_generation_outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
     parser.add_argument(
         "--seed",
@@ -281,7 +282,7 @@ def main() -> int:
     input_image = Image.open(args.init_image).convert("RGB") if args.init_image else None
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    outdir = Path(args.outdir) if args.outdir else (repo_root / "data-generation-outputs")
+    outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
     run_outdir = (outdir / timestamp) if args.num_images > 1 else outdir
     run_outdir.mkdir(parents=True, exist_ok=True)
 

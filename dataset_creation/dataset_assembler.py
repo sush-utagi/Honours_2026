@@ -76,7 +76,12 @@ class HybridDatasetAssembler:
         self.idx_to_name: List[str] = []
 
     # ------------------------------------------------------------------ public
-    def assemble(self, synthetic_dir_name: Optional[str], target_class_name: Optional[str]) -> Dict[str, MultiClassDataset]:
+    def assemble(
+        self,
+        synthetic_dir_name: Optional[str],
+        target_class_name: Optional[str],
+        load_test: bool = True,
+    ) -> Dict[str, MultiClassDataset]:
         """Create train/val/test datasets.
 
         Args:
@@ -84,9 +89,12 @@ class HybridDatasetAssembler:
                                 If None/empty, no synthetic data is injected.
             target_class_name: COCO category name to assign to synthetic images.
                                Required when synthetic_dir_name is provided.
+            load_test: when False, skip loading the test split entirely (useful to keep test untouched).
         """
 
-        splits: Dict[str, List[Sample]] = {"train": [], "val": [], "test": []}
+        splits: Dict[str, List[Sample]] = {"train": [], "val": []}
+        if load_test:
+            splits["test"] = []
 
         # Build category mapping from train annotations (authoritative)
         train_instances, _ = self._paths_for_split("train")
@@ -94,7 +102,7 @@ class HybridDatasetAssembler:
         self._build_category_mapping(coco_train)
 
         # Load real COCO data for each split
-        for split in ["train", "val", "test"]:
+        for split in ["train", "val"] + (["test"] if load_test else []):
             try:
                 instances_path, images_dir = self._paths_for_split(split)
             except FileNotFoundError as exc:
@@ -210,7 +218,10 @@ class HybridDatasetAssembler:
                 )
             return contextual_ann, contextual_imgs
 
-        # For test (or other splits), fall back to raw COCO split.
+        # For test (or other splits), prefer contextual if present, else fall back to COCO.
+        if contextual_ann.exists() and contextual_imgs.exists():
+            return contextual_ann, contextual_imgs
+
         ann = self.coco_root / "annotations" / f"instances_{split}.json"
         imgs = self.coco_root / "images" / split
         if not ann.exists():

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-DATA_DIR="${REPO_ROOT}/diffusion_model/data"
+DATA_DIR="${REPO_ROOT}/data_generation_backend/diffusion_model/data"
 
 FORCE=0
 while [[ $# -gt 0 ]]; do
@@ -12,7 +12,7 @@ while [[ $# -gt 0 ]]; do
       cat <<'EOF'
 Usage: ./download_sd15_resources.sh [--force]
 
-Downloads Stable Diffusion v1.5 checkpoint + tokenizer files into diffusion_model/data.
+Downloads Stable Diffusion v1.5 checkpoint + tokenizer files into data_generation_backend/diffusion_model/data.
 
 If the Hugging Face repo is gated for you, export an access token:
   export HF_TOKEN=hf_...
