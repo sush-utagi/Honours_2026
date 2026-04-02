@@ -18,8 +18,9 @@ for class_dir in "$DATA_DIR"/*/; do
       --placeholder_token="$placeholder" \
       --initializer_token="$class_name" \
       --resolution=512 \
-      --train_batch_size=2 \
-      --gradient_accumulation_steps=4 \
+      --mixed_precision="fp16" \
+      --train_batch_size=4 \
+      --gradient_accumulation_steps=1 \
       --max_train_steps=2000 \
       --learning_rate=5.0e-04 \
       --scale_lr \

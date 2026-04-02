@@ -110,6 +110,12 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str):
         pipeline_kwargs["feature_extractor"] = None
 
     text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
+    for emb_path in embeddings:
+        try:
+            text2img.load_textual_inversion(emb_path)
+            print(f"Loaded textual inversion embedding from {emb_path}")
+        except Exception as exc:  # pragma: no cover - defensive load
+            print(f"Warning: failed to load embedding {emb_path}: {exc}")
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
         text2img.scheduler = scheduler
