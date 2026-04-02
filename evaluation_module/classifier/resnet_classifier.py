@@ -297,6 +297,7 @@ def train_model(
     start_epoch: int = 0,
     optimizer_state: Optional[dict] = None,
     best_val_acc_init: Optional[float] = None,
+    log_fn: Callable[[str], None] = print,
 ) -> TrainHistory:
     device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -334,7 +335,11 @@ def train_model(
         history.train_acc.append(train_acc)
         history.val_acc.append(val_acc)
 
-        print(f"Epoch {epoch+1}/{epochs}: train_loss={train_loss:.4f} val_loss={val_loss:.4f} train_acc={train_acc:.3f} val_acc={val_acc:.3f}")
+        log_fn(
+            f"Epoch {epoch+1}/{start_epoch + epochs}: "
+            f"train_loss={train_loss:.4f} val_loss={val_loss:.4f} "
+            f"train_acc={train_acc:.3f} val_acc={val_acc:.3f}"
+        )
 
         if checkpoint_dir is not None:
             is_best = val_acc > best_val_acc
@@ -357,7 +362,7 @@ def train_model(
             if is_best:
                 best_path = os.path.join(checkpoint_dir, "best.pt")
                 torch.save(ckpt, best_path)
-                print(f"[ckpt] saved best checkpoint to {best_path} (val_acc={val_acc:.3f})")
+                log_fn(f"[ckpt] saved best checkpoint to {best_path} (val_acc={val_acc:.3f})")
             # Optional periodic checkpoints
             if save_every and (epoch + 1) % save_every == 0:
                 epoch_path = os.path.join(checkpoint_dir, f"epoch_{epoch+1:03d}.pt")

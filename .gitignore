@@ -58,7 +58,6 @@ datasets/
 outputs/
 results/
 runs/
-logs/
 tmp/
 wandb/
 mlruns/

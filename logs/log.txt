@@ -1,0 +1,37 @@
+[device] using mps
+[data] train samples: 567,170 | val samples: 63,017
+Epoch 1/2: train_loss=1.9900 val_loss=1.4758 train_acc=0.495 val_acc=0.605
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.605)
+Epoch 2/2: train_loss=1.3105 val_loss=1.2093 train_acc=0.642 val_acc=0.666
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.666)
+[val] loss=1.2093 acc=0.666
+
+============================================================
+Resumed training run
+[device] using mps
+[data] train samples: 567,170 | val samples: 63,017
+[resume] loaded runs/baseline_model_A/checkpoints/last.pt (epoch=2, best_val_acc=0.6658470812182741)
+Epoch 3/3: train_loss=1.0972 val_loss=1.0324 train_acc=0.694 val_acc=0.712
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.712)
+[val] loss=1.0324 acc=0.712
+
+============================================================
+Resumed training run
+[device] using mps
+[data] train samples: 567,170 | val samples: 63,017
+[resume] loaded runs/baseline_model_A/checkpoints/last.pt (epoch=3, best_val_acc=0.7121827411167513)
+Epoch 4/6: train_loss=0.9721 val_loss=0.9701 train_acc=0.725 val_acc=0.727
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.727)
+Epoch 5/6: train_loss=0.8837 val_loss=0.9200 train_acc=0.747 val_acc=0.741
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.741)
+Epoch 6/6: train_loss=0.8172 val_loss=0.8988 train_acc=0.764 val_acc=0.746
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.746)
+[val] loss=0.8988 acc=0.746
+
+============================================================
+Resumed training run
+[device] using mps
+[data] train samples: 567,170 | val samples: 63,017
+[resume] loaded runs/baseline_model_A/checkpoints/last.pt (epoch=6, best_val_acc=0.7459708121827411)
+Epoch 7/8: train_loss=0.7599 val_loss=0.8218 train_acc=0.780 val_acc=0.765
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.765)

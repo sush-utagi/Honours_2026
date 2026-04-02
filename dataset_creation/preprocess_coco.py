@@ -1,8 +1,10 @@
 """Contextual cropping of MS COCO 2017 to single-object 512x512 crops.
 
-For each annotation, this script centers a dynamic window on the object,
-mean-pads if the crop runs off the image border, saves the crop, and writes
-COCO-format annotations with exactly one bounding box per output image.
+USE WITH: 
+
+python dataset_creation/preprocess_coco.py --stratify-train-to-val --val-ratio-from-train 0.1 --seed 42
+
+
 """
 
 from __future__ import annotations

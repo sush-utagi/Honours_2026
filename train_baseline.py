@@ -1,8 +1,17 @@
 #!/usr/bin/env python3
-"""Train Model A (baseline) on contextual COCO crops without pretraining."""
+"""Train Model A (baseline) on contextual COCO crops without pretraining.
+
+RESUME TRAINING:
+    python train_baseline.py --epochs 2 --resume-ckpt runs/baseline_model_A/checkpoints/last.pt
+
+    
+NEW TRAINING:
+    python train_baseline.py --epochs <NUM_EPOCHS>
+"""
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from pathlib import Path
@@ -90,6 +99,20 @@ def generate_gradcam_overlays(
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="Train baseline ResNet18 classifier.")
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=2,
+        help="Number of additional epochs to train (default: 2).",
+    )
+    parser.add_argument(
+        "--resume-ckpt",
+        default=None,
+        help="Optional checkpoint path to resume training from.",
+    )
+    args = parser.parse_args()
+
     device = select_device()
     if device.type == "mps" and os.getenv("USE_MPS", "1") != "1":
         print("[device] MPS available but disabled via USE_MPS=0; using CPU instead.")
@@ -106,8 +129,12 @@ def main() -> None:
     output_dir = ROOT / "runs" / "baseline_model_A"
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    logs_dir = ROOT / "logs"
+    logs_dir.mkdir(exist_ok=True)
+    log_path = logs_dir / "log.txt"
+
     assembler = HybridDatasetAssembler(contextual_root="coco_dataset/contextual_crops")
-    datasets = assembler.assemble(synthetic_dir_name=None, target_class_name=None)
+    datasets = assembler.assemble(synthetic_dir_name=None, target_class_name=None, load_test=False)
     train_ds = datasets.get("train")
     val_ds = datasets.get("val")
     if train_ds is None or val_ds is None:
@@ -119,7 +146,7 @@ def main() -> None:
     # Derive loader settings per device.
     if device.type == "mps":
         batch_size = 32
-        num_workers = 2
+        num_workers = 4
         pin_memory = False
     elif device.type == "cuda":
         batch_size = 64
@@ -151,35 +178,72 @@ def main() -> None:
     )
 
     model = build_resnet18(num_classes=80)  # random init; no ImageNet weights
-    history = train_model(
-        model,
-        train_loader,
-        val_loader,
-        epochs=4,
-        lr=1e-4,
-        device=device,
-        weight_decay=1e-4,
-        show_progress=True,
-        checkpoint_dir=str(output_dir / "checkpoints"),
-        save_every=2, 
-    )
 
-    criterion = torch.nn.CrossEntropyLoss()
-    val_loss, val_acc, y_true, y_prob = evaluate(
-        model.to(device),
-        val_loader,
-        criterion,
-        device,
-        progress_desc="Val final",
-        show_progress=True,
-    )
-    print(f"[val] loss={val_loss:.4f} acc={val_acc:.3f}")
+    start_epoch = 0
+    optimizer_state = None
+    best_val_acc_init = None
+    if args.resume_ckpt:
+        ckpt_path = Path(args.resume_ckpt)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device)
+        if "model_state_dict" not in ckpt:
+            raise ValueError(f"Checkpoint missing model_state_dict: {ckpt_path}")
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer_state = ckpt.get("optimizer_state_dict")
+        best_val_acc_init = ckpt.get("best_val_acc")
+        start_epoch = int(ckpt.get("epoch", 0))
+        print(f"[resume] loaded {ckpt_path} (epoch={start_epoch}, best_val_acc={best_val_acc_init})")
+
+    mode = "a" if args.resume_ckpt else "w"
+    with log_path.open(mode, encoding="utf-8") as log_f:
+        def log(msg: str) -> None:
+            log_f.write(msg + "\n")
+            log_f.flush()
+
+        if args.resume_ckpt:
+            log("\n" + "=" * 60)
+            log("Resumed training run")
+        log(f"[device] using {device}")
+        log(f"[data] train samples: {len(train_ds):,} | val samples: {len(val_ds):,}")
+        if args.resume_ckpt:
+            log(f"[resume] loaded {ckpt_path} (epoch={start_epoch}, best_val_acc={best_val_acc_init})")
+
+        history = train_model(
+            model,
+            train_loader,
+            val_loader,
+            epochs=args.epochs,
+            lr=1e-4,
+            device=device,
+            weight_decay=1e-4,
+            show_progress=True,
+            checkpoint_dir=str(output_dir / "checkpoints"),
+            save_every=2, 
+            start_epoch=start_epoch,
+            optimizer_state=optimizer_state,
+            best_val_acc_init=best_val_acc_init,
+            log_fn=log,
+        )
+
+        criterion = torch.nn.CrossEntropyLoss()
+        val_loss, val_acc, y_true, y_prob = evaluate(
+            model.to(device),
+            val_loader,
+            criterion,
+            device,
+            progress_desc="Val final",
+            show_progress=True,
+        )
+        summary = f"[val] loss={val_loss:.4f} acc={val_acc:.3f}"
+        print(summary)
+        log(summary)
 
     plot_training_curves(history, save_path=str(output_dir / "training_curves.png"))
     plot_precision_recall_curves(y_true, y_prob, class_names, save_path=str(output_dir / "precision_recall.png"))
 
     gradcam_dir = output_dir / "gradcam"
-    generate_gradcam_overlays(model, val_loader, class_names, gradcam_dir, device=device, max_images=6)
+    generate_gradcam_overlays(model, val_loader, class_names, gradcam_dir, device=device, max_images=len(class_names))
 
 
 if __name__ == "__main__":
