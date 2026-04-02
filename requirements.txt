@@ -16,4 +16,5 @@ huggingface-hub==0.23.4
 diffusers==0.25.0
 accelerate
 ipykernel
-∑
+torchview
+graphviz

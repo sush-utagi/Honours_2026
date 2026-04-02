@@ -35,3 +35,5 @@ Resumed training run
 [resume] loaded runs/baseline_model_A/checkpoints/last.pt (epoch=6, best_val_acc=0.7459708121827411)
 Epoch 7/8: train_loss=0.7599 val_loss=0.8218 train_acc=0.780 val_acc=0.765
 [ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_A/checkpoints/best.pt (val_acc=0.765)
+Epoch 8/8: train_loss=0.7108 val_loss=0.8287 train_acc=0.793 val_acc=0.764
+[val] loss=0.8287 acc=0.764

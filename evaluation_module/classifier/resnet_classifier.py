@@ -29,6 +29,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset, Subset, random_split
 from tqdm import tqdm
+from torchview import draw_graph
 
 
 ###############################################################################
@@ -590,6 +591,7 @@ def run_experiment(
     )
 
     model = build_resnet18(num_classes=len(class_names))
+    # save_architecture_flowchart(model, output_dir)
     history = train_model(model, train_loader, val_loader, epochs=epochs, lr=lr)
 
     # final evaluation for PR curves
@@ -608,6 +610,19 @@ def run_experiment(
         max_images=4,
         device=device,
     )
+
+
+# def save_architecture_flowchart(model: nn.Module, output_dir: str, image_size: int = 224):
+#     """Generates a visual flow chart of the ResNet architecture."""
+#     model_graph = draw_graph(
+#         model, 
+#         input_size=(1, 3, image_size, image_size), 
+#         graph_name="ResNet18_Flowchart",
+#         directory=output_dir,
+#         expand_nested=True, # This shows the inside of your BasicBlocks
+#         save_graph=True
+#     )
+#     print(f"[info] Architecture flowchart saved to {output_dir}/ResNet18_Flowchart.gv.pdf")
 
 
 if __name__ == "__main__":
