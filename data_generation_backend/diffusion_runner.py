@@ -89,7 +89,7 @@ def _resolve_diffusers_scheduler(config, sampler_name: str):
     return None
 
 
-def _prepare_diffusers_pipelines(device: str, sampler_name: str):
+def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: list[str] = []):
     try:
         from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
     except ImportError as exc:
@@ -147,8 +147,9 @@ def _generate_with_diffusers(
     run_outdir: Path,
     timestamp: str,
     input_image: Image.Image | None,
+    embeddings: list[str] = [],
 ):
-    text2img, img2img = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler)
+    text2img, img2img = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler, embeddings=embeddings)
 
     for i, (cfg_scale, n_steps) in enumerate(zip(cfg_schedule, steps_schedule)):
         seed = seed_base + i
@@ -277,6 +278,7 @@ def main() -> int:
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")
     parser.add_argument("--allow-cuda", action="store_true", help="Allow CUDA if available.")
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
+    parser.add_argument("--embeddings", nargs="*", default=[], help="Paths to textual inversion embedding folders or files.")
     args = parser.parse_args()
 
     use_hg_diffusers = _env_flag("USE_HG_DIFFUSERS")
@@ -309,6 +311,7 @@ def main() -> int:
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,
+            embeddings=args.embeddings,
         )
     else:
         print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")

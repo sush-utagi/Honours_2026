@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Train Model A (baseline) on contextual COCO crops without pretraining.
+"""Train a ResNet18 classifier on contextual COCO crops (no pretraining).
 
-RESUME TRAINING:
-    python train_baseline.py --epochs 2 --resume-ckpt runs/baseline_model_A/checkpoints/last.pt
+Supports both the baseline model and an experimental variant.
 
-    
+RESUME TRAINING (examples):
+    python experiments/pipeline/train_model.py --model-type baseline --epochs 2 --resume-ckpt runs/baseline_model_A/checkpoints/last.pt
+    python experiments/pipeline/train_model.py --model-type experimental --epochs 2 --resume-ckpt runs/experimental_model_A/checkpoints/last.pt
+
 NEW TRAINING:
-    python train_baseline.py --epochs <NUM_EPOCHS>
+    python experiments/pipeline/train_model.py --model-type baseline --epochs <NUM_EPOCHS>
+    python experiments/pipeline/train_model.py --model-type experimental --epochs <NUM_EPOCHS>
 """
 
 from __future__ import annotations
@@ -26,9 +29,17 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 import torch
 from torch.utils.data import DataLoader
 
-ROOT = Path(__file__).resolve().parent
-sys.path.append(str(ROOT / "dataset_creation"))
-sys.path.append(str(ROOT / "evaluation_module" / "classifier"))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
+
+
+def resolve_project_path(path_like: str | Path) -> Path:
+    """Return an absolute path, resolving relative ones from the project root."""
+
+    path = Path(path_like)
+    return path if path.is_absolute() else PROJECT_ROOT / path
+
 
 from dataset_creation.dataset_assembler import HybridDatasetAssembler
 from evaluation_module.classifier.resnet_classifier import (
@@ -99,7 +110,13 @@ def generate_gradcam_overlays(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train baseline ResNet18 classifier.")
+    parser = argparse.ArgumentParser(description="Train (baseline or experimental) ResNet18 classifier.")
+    parser.add_argument(
+        "--model-type",
+        choices=["baseline", "experimental"],
+        default="baseline",
+        help="Model variant; controls run/log directories (default: baseline).",
+    )
     parser.add_argument(
         "--epochs",
         type=int,
@@ -126,14 +143,18 @@ def main() -> None:
         except Exception:
             pass
 
-    output_dir = ROOT / "runs" / "baseline_model_A"
+    run_name = "baseline_model_A" if args.model_type == "baseline" else "experimental_model_A"
+    output_dir = PROJECT_ROOT / "runs" / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[run] model_type={args.model_type} run_dir={output_dir}")
 
-    logs_dir = ROOT / "logs"
+    logs_dir = PROJECT_ROOT / "logs"
     logs_dir.mkdir(exist_ok=True)
-    log_path = logs_dir / "log.txt"
+    log_path = logs_dir / f"log_{args.model_type}.txt"
 
-    assembler = HybridDatasetAssembler(contextual_root="coco_dataset/contextual_crops")
+    assembler = HybridDatasetAssembler(
+        contextual_root=str(PROJECT_ROOT / "coco_dataset" / "contextual_crops")
+    )
     datasets = assembler.assemble(synthetic_dir_name=None, target_class_name=None, load_test=False)
     train_ds = datasets.get("train")
     val_ds = datasets.get("val")
@@ -183,7 +204,7 @@ def main() -> None:
     optimizer_state = None
     best_val_acc_init = None
     if args.resume_ckpt:
-        ckpt_path = Path(args.resume_ckpt)
+        ckpt_path = resolve_project_path(args.resume_ckpt)
         if not ckpt_path.exists():
             raise FileNotFoundError(f"Resume checkpoint not found: {ckpt_path}")
         ckpt = torch.load(ckpt_path, map_location=device)
@@ -204,6 +225,7 @@ def main() -> None:
         if args.resume_ckpt:
             log("\n" + "=" * 60)
             log("Resumed training run")
+        log(f"[run] model_type={args.model_type} run_dir={output_dir}")
         log(f"[device] using {device}")
         log(f"[data] train samples: {len(train_ds):,} | val samples: {len(val_ds):,}")
         if args.resume_ckpt:

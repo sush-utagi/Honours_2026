@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Evaluate the baseline classifier on the full validation set.
+Evaluate the baseline or experimental classifier on the full validation set.
 
 Given a checkpoint and COCO-style val annotations, this script:
   * loads the model
   * runs inference over every labeled validation image
   * writes a text report with overall accuracy + per-class precision/recall/F1
 
-Outputs are saved under results/<timestamp>_baseline_report.txt by default.
+Outputs are saved under results/<timestamp>_<model-type>_report.txt by default.
 """
 
 from __future__ import annotations
@@ -24,16 +24,23 @@ import torch
 from PIL import Image
 from tqdm import tqdm
 
-# Encourage MPS to fall back gracefully when ops aren't supported.
-# os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
-# os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
-
-# ROOT = Path(__file__).resolve().parent
-# sys.path.append(str(ROOT / "dataset_creation"))
-# sys.path.append(str(ROOT / "evaluation_module" / "classifier"))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.append(str(PROJECT_ROOT))
 
 from dataset_creation.dataset_assembler import HybridDatasetAssembler, _pil_to_tensor_512  # noqa: E402
 from evaluation_module.classifier.resnet_classifier import build_resnet18  # noqa: E402
+
+DEFAULT_VAL_DIR = PROJECT_ROOT / "coco_dataset" / "contextual_crops" / "images" / "val"
+DEFAULT_VAL_ANN = PROJECT_ROOT / "coco_dataset" / "contextual_crops" / "annotations" / "single_instances_val.json"
+DEFAULT_RESULTS_DIR = PROJECT_ROOT / "results"
+
+
+def resolve_project_path(path_like: str | Path) -> Path:
+    """Return absolute paths, resolving relative ones from the project root."""
+
+    path = Path(path_like)
+    return path if path.is_absolute() else PROJECT_ROOT / path
 
 
 def select_device() -> torch.device:
@@ -60,7 +67,7 @@ def load_class_names() -> List[str]:
 
     from pycocotools.coco import COCO
 
-    assembler = HybridDatasetAssembler(contextual_root="coco_dataset/contextual_crops")
+    assembler = HybridDatasetAssembler(contextual_root=str(PROJECT_ROOT / "coco_dataset" / "contextual_crops"))
     ann_path, _ = assembler._paths_for_split("train")
     coco = COCO(str(ann_path))
     assembler._build_category_mapping(coco)
@@ -189,25 +196,31 @@ def save_report(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate baseline classifier on full validation set.")
+    parser = argparse.ArgumentParser(description="Evaluate baseline or experimental classifier on full validation set.")
+    parser.add_argument(
+        "--model-type",
+        choices=["baseline", "experimental"],
+        default="baseline",
+        help="Model variant label; used for report naming (default: baseline).",
+    )
     parser.add_argument(
         "--ckpt",
         required=True,
-        help="Path to checkpoint (e.g., runs/baseline_model_A/checkpoints/best.pt)",
+        help="Path to checkpoint (e.g., runs/baseline_model_A/checkpoints/best.pt or runs/experimental_model_A/checkpoints/best.pt)",
     )
     parser.add_argument(
         "--val-dir",
-        default="coco_dataset/contextual_crops/images/val",
+        default=str(DEFAULT_VAL_DIR),
         help="Validation images directory.",
     )
     parser.add_argument(
         "--val-ann",
-        default="coco_dataset/contextual_crops/annotations/single_instances_val.json",
+        default=str(DEFAULT_VAL_ANN),
         help="COCO annotations file matching --val-dir.",
     )
     parser.add_argument(
         "--results-dir",
-        default="results",
+        default=str(DEFAULT_RESULTS_DIR),
         help="Directory to store the text report (default: results).",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed (reserved for future use).")
@@ -222,12 +235,13 @@ def main() -> None:
     device = select_device()
     print(f"[device] using {device}")
 
-    ckpt_path = Path(args.ckpt)
+    ckpt_path = resolve_project_path(args.ckpt)
     if not ckpt_path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
+    print(f"[run] model_type={args.model_type} ckpt={ckpt_path}")
 
-    val_dir = Path(args.val_dir)
-    val_ann = Path(args.val_ann)
+    val_dir = resolve_project_path(args.val_dir)
+    val_ann = resolve_project_path(args.val_ann)
     if not val_dir.exists():
         raise FileNotFoundError(f"Validation directory not found: {val_dir}")
     if not val_ann.exists():
@@ -301,7 +315,7 @@ def main() -> None:
     metrics = compute_metrics(preds, targets, num_classes=len(class_names))
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    out_path = Path(args.results_dir) / f"{timestamp}_baseline_report.txt"
+    out_path = resolve_project_path(args.results_dir) / f"{timestamp}_{args.model_type}_report.txt"
     save_report(out_path, class_names, metrics, worst)
 
 
