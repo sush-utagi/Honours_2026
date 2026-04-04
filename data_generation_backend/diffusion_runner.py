@@ -13,7 +13,6 @@ from dotenv import load_dotenv
 from transformers import CLIPTokenizer
 import torch
 
-
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -97,6 +96,8 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: lis
         raise RuntimeError(
             "USE_HG_DIFFUSERS is set but the 'diffusers' package is not installed. "
         ) from exc
+    
+    from compel import Compel
 
     model_id_env = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip()
     model_id = model_id_env or "runwayml/stable-diffusion-v1-5"
@@ -135,7 +136,13 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: lis
         img2img.enable_vae_slicing()
     img2img.set_progress_bar_config(disable=True)
 
-    return text2img, img2img
+    compel = Compel(
+        tokenizer=text2img.tokenizer,
+        text_encoder=text2img.text_encoder,
+    )
+
+
+    return text2img, img2img, compel
 
 
 def _generate_with_diffusers(
@@ -151,19 +158,23 @@ def _generate_with_diffusers(
     input_image: Image.Image | None,
     embeddings: list[str] = [],
 ):
-    text2img, img2img = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler, embeddings=embeddings)
+    text2img, img2img, compel = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler, embeddings=embeddings)
 
     for prompt, neg_prompt, cfg_scale, n_steps, seed in zip(
         prompts, negative_prompts, cfg_schedule, steps_schedule, seeds
     ):
-        generator_device = device if device == "cuda" else "cpu"
+        generator_device = device if device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
         guidance_scale = 1.0 if args.no_cfg else cfg_scale
 
+        prompt_embeds = compel(prompt)
+        neg_prompt_embeds = compel(neg_prompt)
+        prompt_embeds, neg_prompt_embeds = compel.pad_conditioning_tensors_to_same_length([prompt_embeds, neg_prompt_embeds])
+
         if input_image is not None:
             result = img2img(
-                prompt=prompt,
-                negative_prompt=neg_prompt,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=neg_prompt_embeds,
                 image=input_image,
                 strength=args.strength,
                 guidance_scale=guidance_scale,
@@ -172,8 +183,8 @@ def _generate_with_diffusers(
             )
         else:
             result = text2img(
-                prompt=prompt,
-                negative_prompt=neg_prompt,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=neg_prompt_embeds,
                 guidance_scale=guidance_scale,
                 num_inference_steps=n_steps,
                 generator=generator,
@@ -201,6 +212,8 @@ def _generate_with_local_sd(
     timestamp: str,
     input_image: Image.Image | None,
 ):
+    from diffusion_model.sd import model_loader, pipeline
+
     sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
     data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
 
@@ -215,11 +228,7 @@ def _generate_with_local_sd(
             f"Missing diffusion resources: {missing_str}. Run ./scripts/get_resources.sh to download them."
         )
 
-    if str(sd_dir) not in sys.path:
-        sys.path.insert(0, str(sd_dir))
-
-    import model_loader  # type: ignore
-    import pipeline  # type: ignore
+    if str(sd_dir) not in sys.path: sys.path.insert(0, str(sd_dir))
 
     tokenizer = CLIPTokenizer(str(vocab_path), merges_file=str(merges_path))
     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
@@ -258,32 +267,15 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
     parser.add_argument("--prompt", help="Text prompt (ignored when --from-json is used).", required=False)
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
-    parser.add_argument(
-        "--from-json",
-        default=None,
-        help="Path to a prompts JSON file; generates one image per sample in the file.",
-    )
+    parser.add_argument("--from-json",default=None,help="Path to a prompts JSON file; generates one image per sample in the file.",)
     parser.add_argument("--outdir", default=None, help="Output directory (default: data_generation_outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
-    parser.add_argument(
-        "--seed",
-        type=int,
-        default=None,
-        help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",
-    )
-    parser.add_argument("--steps", type=int, default=20, help="Number of inference steps.")
+    parser.add_argument("--seed",type=int,default=None,help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",)
+    parser.add_argument("--steps", type=int, default=30, help="Number of inference steps.")
     parser.add_argument("--sampler", default="ddim", help="Sampler name (only 'ddpm' is supported by this repo).")
     parser.add_argument("--cfg-scale", type=float, default=8.0, help="Classifier-free guidance scale.")
-    parser.add_argument(
-        "--sweep-cfg",
-        action="store_true",
-        help="Sweep integer cfg scales 5–13 (inclusive) across images (requires at least 9 images; remainder is distributed unevenly).",
-    )
-    parser.add_argument(
-        "--sweep-num-steps",
-        action="store_true",
-        help="Sweep inference steps 10–50 in increments of 5 across images (requires at least 9 images; remainder is distributed unevenly). When combined with --sweep-cfg, performs a full cfg/steps grid (9×9).",
-    )
+    parser.add_argument("--sweep-cfg",action="store_true",help="Sweep integer cfg scales 5–13 (inclusive) across images (requires at least 9 images; remainder is distributed unevenly).")
+    parser.add_argument("--sweep-num-steps",action="store_true",help="Sweep inference steps 10–50 in increments of 5 across images (requires at least 9 images",)
     parser.add_argument("--no-cfg", action="store_true", help="Disable classifier-free guidance.")
     parser.add_argument("--strength", type=float, default=0.9, help="img2img strength (0-1). Ignored for txt2img.")
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")

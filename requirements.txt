@@ -18,3 +18,4 @@ accelerate
 ipykernel
 torchview
 graphviz
+compel
