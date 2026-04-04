@@ -96,7 +96,6 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: lis
     except ImportError as exc:
         raise RuntimeError(
             "USE_HG_DIFFUSERS is set but the 'diffusers' package is not installed. "
-            "Install it with `pip install diffusers` or unset USE_HG_DIFFUSERS."
         ) from exc
 
     model_id_env = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip()
@@ -273,7 +272,7 @@ def main() -> int:
         help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",
     )
     parser.add_argument("--steps", type=int, default=20, help="Number of inference steps.")
-    parser.add_argument("--sampler", default="ddpm", help="Sampler name (only 'ddpm' is supported by this repo).")
+    parser.add_argument("--sampler", default="ddim", help="Sampler name (only 'ddpm' is supported by this repo).")
     parser.add_argument("--cfg-scale", type=float, default=8.0, help="Classifier-free guidance scale.")
     parser.add_argument(
         "--sweep-cfg",
@@ -304,6 +303,8 @@ def main() -> int:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
 
+    json_embeddings: list[str] = []
+
     # Prepare prompts/schedules depending on mode.
     if args.from_json:
         if args.sweep_cfg or args.sweep_num_steps:
@@ -315,10 +316,26 @@ def main() -> int:
             data = json.load(f)
         coco_class = data.get("coco_class")
         samples = data.get("samples")
+        embedding_path = data.get("embedding_path")
         if not coco_class or not isinstance(coco_class, str):
             raise ValueError("JSON must include string field 'coco_class'.")
         if not isinstance(samples, list) or not samples:
             raise ValueError("JSON must include non-empty list field 'samples'.")
+
+        if embedding_path:
+            raw_paths = [embedding_path] if isinstance(embedding_path, str) else embedding_path
+            if not isinstance(raw_paths, list) or not all(isinstance(p, str) for p in raw_paths):
+                raise ValueError("JSON field 'embedding_path' must be a string or list of strings.")
+            for raw_path in raw_paths:
+                path_obj = Path(raw_path)
+                candidate_paths = [path_obj] if path_obj.is_absolute() else [repo_root / path_obj, json_path.parent / path_obj]
+                for candidate in candidate_paths:
+                    if candidate.exists():
+                        json_embeddings.append(str(candidate.resolve()))
+                        break
+                else:
+                    tried = ", ".join(str(c) for c in candidate_paths)
+                    raise FileNotFoundError(f"Embedding path not found for '{raw_path}'. Tried: {tried}")
 
         prompts: list[str] = []
         negative_prompts: list[str] = []
@@ -355,6 +372,8 @@ def main() -> int:
         seed_base = int(torch.randint(0, 2**31 - 1, (1,)).item())
     seeds = [seed_base + i for i in range(num_images)]
 
+    all_embeddings = [str(p) for p in args.embeddings] + json_embeddings
+
     if use_hg_diffusers:
         print("USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend (runwayml/stable-diffusion-v1-5).")
         _generate_with_diffusers(
@@ -368,7 +387,7 @@ def main() -> int:
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,
-            embeddings=args.embeddings,
+            embeddings=all_embeddings,
         )
     else:
         print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
