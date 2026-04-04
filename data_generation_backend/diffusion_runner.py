@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from datetime import datetime
@@ -141,9 +142,11 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: lis
 def _generate_with_diffusers(
     args: argparse.Namespace,
     device: str,
+    prompts: list[str],
+    negative_prompts: list[str],
     cfg_schedule: list[float],
     steps_schedule: list[int],
-    seed_base: int,
+    seeds: list[int],
     run_outdir: Path,
     timestamp: str,
     input_image: Image.Image | None,
@@ -151,16 +154,17 @@ def _generate_with_diffusers(
 ):
     text2img, img2img = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler, embeddings=embeddings)
 
-    for i, (cfg_scale, n_steps) in enumerate(zip(cfg_schedule, steps_schedule)):
-        seed = seed_base + i
+    for prompt, neg_prompt, cfg_scale, n_steps, seed in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds
+    ):
         generator_device = device if device == "cuda" else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
         guidance_scale = 1.0 if args.no_cfg else cfg_scale
 
         if input_image is not None:
             result = img2img(
-                prompt=args.prompt,
-                negative_prompt=args.negative_prompt,
+                prompt=prompt,
+                negative_prompt=neg_prompt,
                 image=input_image,
                 strength=args.strength,
                 guidance_scale=guidance_scale,
@@ -169,8 +173,8 @@ def _generate_with_diffusers(
             )
         else:
             result = text2img(
-                prompt=args.prompt,
-                negative_prompt=args.negative_prompt,
+                prompt=prompt,
+                negative_prompt=neg_prompt,
                 guidance_scale=guidance_scale,
                 num_inference_steps=n_steps,
                 generator=generator,
@@ -189,9 +193,11 @@ def _generate_with_local_sd(
     args: argparse.Namespace,
     repo_root: Path,
     device: str,
+    prompts: list[str],
+    negative_prompts: list[str],
     cfg_schedule: list[float],
     steps_schedule: list[int],
-    seed_base: int,
+    seeds: list[int],
     run_outdir: Path,
     timestamp: str,
     input_image: Image.Image | None,
@@ -220,11 +226,12 @@ def _generate_with_local_sd(
     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
     do_cfg = not args.no_cfg
 
-    for i, (cfg_scale, n_steps) in enumerate(zip(cfg_schedule, steps_schedule)):
-        seed = seed_base + i
+    for prompt, neg_prompt, cfg_scale, n_steps, seed in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds
+    ):
         output_array = pipeline.generate(
-            prompt=args.prompt,
-            uncond_prompt=args.negative_prompt,
+            prompt=prompt,
+            uncond_prompt=neg_prompt,
             input_image=input_image,
             strength=args.strength,
             do_cfg=do_cfg,
@@ -250,8 +257,13 @@ def main() -> int:
     load_dotenv()
 
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
-    parser.add_argument("--prompt", required=True, help="Text prompt.")
+    parser.add_argument("--prompt", help="Text prompt (ignored when --from-json is used).", required=False)
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
+    parser.add_argument(
+        "--from-json",
+        default=None,
+        help="Path to a prompts JSON file; generates one image per sample in the file.",
+    )
     parser.add_argument("--outdir", default=None, help="Output directory (default: data_generation_outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
     parser.add_argument(
@@ -291,23 +303,68 @@ def main() -> int:
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
-    run_outdir = (outdir / timestamp) if args.num_images > 1 else outdir
-    run_outdir.mkdir(parents=True, exist_ok=True)
+
+    # Prepare prompts/schedules depending on mode.
+    if args.from_json:
+        if args.sweep_cfg or args.sweep_num_steps:
+            raise ValueError("--from-json cannot be combined with sweep flags.")
+        json_path = Path(args.from_json)
+        if not json_path.exists():
+            raise FileNotFoundError(f"JSON file not found: {json_path}")
+        with json_path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        coco_class = data.get("coco_class")
+        samples = data.get("samples")
+        if not coco_class or not isinstance(coco_class, str):
+            raise ValueError("JSON must include string field 'coco_class'.")
+        if not isinstance(samples, list) or not samples:
+            raise ValueError("JSON must include non-empty list field 'samples'.")
+
+        prompts: list[str] = []
+        negative_prompts: list[str] = []
+        cfg_schedule: list[float] = []
+        steps_schedule: list[int] = []
+
+        for idx, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                raise ValueError(f"Sample at index {idx} is not an object.")
+            try:
+                prompts.append(sample["prompt"])
+            except KeyError as exc:
+                raise ValueError(f"Sample {idx} missing required key 'prompt'.") from exc
+            negative_prompts.append(sample.get("negative_prompt", args.negative_prompt))
+            cfg_schedule.append(float(sample.get("cfg_scale", args.cfg_scale)))
+            steps_schedule.append(int(sample.get("steps", args.steps)))
+
+        num_images = len(prompts)
+        outdir = outdir / coco_class
+        run_outdir = outdir
+        run_outdir.mkdir(parents=True, exist_ok=True)
+    else:
+        if args.prompt is None:
+            raise ValueError("--prompt is required when not using --from-json.")
+        num_images = args.num_images
+        cfg_schedule, steps_schedule = _build_schedules(args)
+        prompts = [args.prompt] * num_images
+        negative_prompts = [args.negative_prompt] * num_images
+        run_outdir = (outdir / timestamp) if num_images > 1 else outdir
+        run_outdir.mkdir(parents=True, exist_ok=True)
 
     seed_base = args.seed
     if seed_base is None:
         seed_base = int(torch.randint(0, 2**31 - 1, (1,)).item())
-
-    cfg_schedule, steps_schedule = _build_schedules(args)
+    seeds = [seed_base + i for i in range(num_images)]
 
     if use_hg_diffusers:
         print("USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend (runwayml/stable-diffusion-v1-5).")
         _generate_with_diffusers(
             args=args,
             device=device,
+            prompts=prompts,
+            negative_prompts=negative_prompts,
             cfg_schedule=cfg_schedule,
             steps_schedule=steps_schedule,
-            seed_base=seed_base,
+            seeds=seeds,
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,
@@ -319,9 +376,11 @@ def main() -> int:
             args=args,
             repo_root=repo_root,
             device=device,
+            prompts=prompts,
+            negative_prompts=negative_prompts,
             cfg_schedule=cfg_schedule,
             steps_schedule=steps_schedule,
-            seed_base=seed_base,
+            seeds=seeds,
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,

@@ -9,6 +9,8 @@ Thumbs.db
 coco_dataset/
 project.txt
 data_generation_backend/embeddings
+data_generation_backend/prompt_generation/*.json
+data_generation_outputs/
 
 .vscode/
 .idea/
