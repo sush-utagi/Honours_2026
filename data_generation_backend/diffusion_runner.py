@@ -76,7 +76,7 @@ def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int]]:
 def _resolve_diffusers_scheduler(config, sampler_name: str):
     try:
         from diffusers import DDPMScheduler, DDIMScheduler, DPMSolverMultistepScheduler
-    except ImportError as exc:  # pragma: no cover - handled earlier
+    except ImportError as exc: 
         raise ImportError("The 'diffusers' package is required but not installed.") from exc
 
     name = sampler_name.lower()
@@ -156,26 +156,30 @@ def _generate_with_diffusers(
     run_outdir: Path,
     timestamp: str,
     input_image: Image.Image | None,
+    input_images: list[str] | None = None,
     embeddings: list[str] = [],
 ):
     text2img, img2img, compel = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler, embeddings=embeddings)
+    img_paths = input_images if input_images is not None else [""] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, seed in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds
+    for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds, img_paths
     ):
+        active_image = Image.open(img_path).convert("RGB") if img_path else input_image
+
         generator_device = device if device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
-        guidance_scale = 1.0 if args.no_cfg else cfg_scale
+        guidance_scale = 9.0 if args.no_cfg else cfg_scale
 
         prompt_embeds = compel(prompt)
         neg_prompt_embeds = compel(neg_prompt)
         prompt_embeds, neg_prompt_embeds = compel.pad_conditioning_tensors_to_same_length([prompt_embeds, neg_prompt_embeds])
 
-        if input_image is not None:
+        if active_image is not None:
             result = img2img(
                 prompt_embeds=prompt_embeds,
                 negative_prompt_embeds=neg_prompt_embeds,
-                image=input_image,
+                image=active_image,
                 strength=args.strength,
                 guidance_scale=guidance_scale,
                 num_inference_steps=n_steps,
@@ -198,7 +202,6 @@ def _generate_with_diffusers(
         image.save(outpath)
         print(f"Wrote {outpath}")
 
-
 def _generate_with_local_sd(
     args: argparse.Namespace,
     repo_root: Path,
@@ -212,23 +215,25 @@ def _generate_with_local_sd(
     timestamp: str,
     input_image: Image.Image | None,
 ):
-    from diffusion_model.sd import model_loader, pipeline
-
     sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
     data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
 
     vocab_path = data_dir / "vocab.json"
     merges_path = data_dir / "merges.txt"
-    weights_path = data_dir / "v1-5-pruned-emaonly.ckpt"
+    weights_path = "/Users/susheelutagi/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.ckpt"
 
-    missing = [p for p in (vocab_path, merges_path, weights_path) if not p.exists()]
-    if missing:
-        missing_str = ", ".join(str(p) for p in missing)
-        raise FileNotFoundError(
-            f"Missing diffusion resources: {missing_str}. Run ./scripts/get_resources.sh to download them."
-        )
+    # missing = [p for p in (vocab_path, merges_path, weights_path) if not p.exists()]
+    # if missing:
+    #     missing_str = ", ".join(str(p) for p in missing)
+    #     raise FileNotFoundError(
+    #         f"Missing diffusion resources: {missing_str}. Run ./scripts/get_resources.sh to download them."
+    #     )
 
-    if str(sd_dir) not in sys.path: sys.path.insert(0, str(sd_dir))
+    if str(sd_dir) not in sys.path:
+        sys.path.insert(0, str(sd_dir))
+
+    import model_loader  # type: ignore
+    import pipeline      # type: ignore
 
     tokenizer = CLIPTokenizer(str(vocab_path), merges_file=str(merges_path))
     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
@@ -271,13 +276,13 @@ def main() -> int:
     parser.add_argument("--outdir", default=None, help="Output directory (default: data_generation_outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
     parser.add_argument("--seed",type=int,default=None,help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",)
-    parser.add_argument("--steps", type=int, default=30, help="Number of inference steps.")
-    parser.add_argument("--sampler", default="ddim", help="Sampler name (only 'ddpm' is supported by this repo).")
+    parser.add_argument("--steps", type=int, default=25, help="Number of inference steps.")
+    parser.add_argument("--sampler", default="ddim", help="Sampler name: choose ddpm or ddim.")
     parser.add_argument("--cfg-scale", type=float, default=8.0, help="Classifier-free guidance scale.")
     parser.add_argument("--sweep-cfg",action="store_true",help="Sweep integer cfg scales 5–13 (inclusive) across images (requires at least 9 images; remainder is distributed unevenly).")
     parser.add_argument("--sweep-num-steps",action="store_true",help="Sweep inference steps 10–50 in increments of 5 across images (requires at least 9 images",)
     parser.add_argument("--no-cfg", action="store_true", help="Disable classifier-free guidance.")
-    parser.add_argument("--strength", type=float, default=0.9, help="img2img strength (0-1). Ignored for txt2img.")
+    parser.add_argument("--strength", type=float, default=0.7, help="img2img strength (0-1). Ignored for txt2img.")
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")
     parser.add_argument("--allow-cuda", action="store_true", help="Allow CUDA if available.")
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
@@ -296,8 +301,8 @@ def main() -> int:
     outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
 
     json_embeddings: list[str] = []
+    init_images: list[str] | None = None
 
-    # Prepare prompts/schedules depending on mode.
     if args.from_json:
         if args.sweep_cfg or args.sweep_num_steps:
             raise ValueError("--from-json cannot be combined with sweep flags.")
@@ -309,10 +314,9 @@ def main() -> int:
         coco_class = data.get("coco_class")
         samples = data.get("samples")
         embedding_path = data.get("embedding_path")
-        if not coco_class or not isinstance(coco_class, str):
-            raise ValueError("JSON must include string field 'coco_class'.")
-        if not isinstance(samples, list) or not samples:
-            raise ValueError("JSON must include non-empty list field 'samples'.")
+
+        if not coco_class or not isinstance(coco_class, str): raise ValueError("JSON must include string field 'coco_class'.")
+        if not isinstance(samples, list) or not samples: raise ValueError("JSON must include non-empty list field 'samples'.")
 
         if embedding_path:
             raw_paths = [embedding_path] if isinstance(embedding_path, str) else embedding_path
@@ -333,6 +337,7 @@ def main() -> int:
         negative_prompts: list[str] = []
         cfg_schedule: list[float] = []
         steps_schedule: list[int] = []
+        init_images: list[str] = []
 
         for idx, sample in enumerate(samples):
             if not isinstance(sample, dict):
@@ -344,6 +349,7 @@ def main() -> int:
             negative_prompts.append(sample.get("negative_prompt", args.negative_prompt))
             cfg_schedule.append(float(sample.get("cfg_scale", args.cfg_scale)))
             steps_schedule.append(int(sample.get("steps", args.steps)))
+            init_images.append(sample.get("init_image", ""))
 
         num_images = len(prompts)
         outdir = outdir / coco_class
@@ -379,6 +385,7 @@ def main() -> int:
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,
+            input_images=init_images,
             embeddings=all_embeddings,
         )
     else:
@@ -395,6 +402,7 @@ def main() -> int:
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,
+            input_images=init_images,
         )
 
     return 0

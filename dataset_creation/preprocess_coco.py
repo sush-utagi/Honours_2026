@@ -2,7 +2,7 @@
 
 USE WITH: 
 
-python dataset_creation/preprocess_coco.py --stratify-train-to-val --val-ratio-from-train 0.1 --seed 42
+python dataset_creation/preprocess_coco.py --stratify-train-to-val --val-ratio-from-train 0.1
 
 
 """
@@ -389,12 +389,6 @@ def main() -> None:
         default="coco_dataset/contextual_crops",
         type=Path,
         help="Root to write cropped images and single-instance annotations",
-    )
-    parser.add_argument(
-        "--window",
-        default=WINDOW,
-        type=int,
-        help="Crop window size (pixels); must be even",
     )
     parser.add_argument(
         "--zoom-margin",
