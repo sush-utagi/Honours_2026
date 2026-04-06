@@ -89,7 +89,7 @@ def _resolve_diffusers_scheduler(config, sampler_name: str):
     return None
 
 
-def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: list[str] = []):
+def _prepare_diffusers_pipelines(device: str, sampler_name: str):
     try:
         from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
     except ImportError as exc:
@@ -111,12 +111,6 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, embeddings: lis
         pipeline_kwargs["feature_extractor"] = None
 
     text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
-    for emb_path in embeddings:
-        try:
-            text2img.load_textual_inversion(emb_path)
-            print(f"Loaded textual inversion embedding from {emb_path}")
-        except Exception as exc:  # pragma: no cover - defensive load
-            print(f"Warning: failed to load embedding {emb_path}: {exc}")
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
         text2img.scheduler = scheduler
@@ -157,9 +151,8 @@ def _generate_with_diffusers(
     timestamp: str,
     input_image: Image.Image | None,
     input_images: list[str] | None = None,
-    embeddings: list[str] = [],
 ):
-    text2img, img2img, compel = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler, embeddings=embeddings)
+    text2img, img2img, compel = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler)
     img_paths = input_images if input_images is not None else [""] * len(prompts)
 
     for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path in zip(
@@ -286,7 +279,7 @@ def main() -> int:
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")
     parser.add_argument("--allow-cuda", action="store_true", help="Allow CUDA if available.")
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
-    parser.add_argument("--embeddings", nargs="*", default=[], help="Paths to textual inversion embedding folders or files.")
+
     args = parser.parse_args()
 
     use_hg_diffusers = _env_flag("USE_HG_DIFFUSERS")
@@ -300,7 +293,6 @@ def main() -> int:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
 
-    json_embeddings: list[str] = []
     init_images: list[str] | None = None
 
     if args.from_json:
@@ -313,25 +305,11 @@ def main() -> int:
             data = json.load(f)
         coco_class = data.get("coco_class")
         samples = data.get("samples")
-        embedding_path = data.get("embedding_path")
+
 
         if not coco_class or not isinstance(coco_class, str): raise ValueError("JSON must include string field 'coco_class'.")
         if not isinstance(samples, list) or not samples: raise ValueError("JSON must include non-empty list field 'samples'.")
 
-        if embedding_path:
-            raw_paths = [embedding_path] if isinstance(embedding_path, str) else embedding_path
-            if not isinstance(raw_paths, list) or not all(isinstance(p, str) for p in raw_paths):
-                raise ValueError("JSON field 'embedding_path' must be a string or list of strings.")
-            for raw_path in raw_paths:
-                path_obj = Path(raw_path)
-                candidate_paths = [path_obj] if path_obj.is_absolute() else [repo_root / path_obj, json_path.parent / path_obj]
-                for candidate in candidate_paths:
-                    if candidate.exists():
-                        json_embeddings.append(str(candidate.resolve()))
-                        break
-                else:
-                    tried = ", ".join(str(c) for c in candidate_paths)
-                    raise FileNotFoundError(f"Embedding path not found for '{raw_path}'. Tried: {tried}")
 
         prompts: list[str] = []
         negative_prompts: list[str] = []
@@ -370,7 +348,7 @@ def main() -> int:
         seed_base = int(torch.randint(0, 2**31 - 1, (1,)).item())
     seeds = [seed_base + i for i in range(num_images)]
 
-    all_embeddings = [str(p) for p in args.embeddings] + json_embeddings
+
 
     if use_hg_diffusers:
         print("USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend (runwayml/stable-diffusion-v1-5).")
@@ -386,7 +364,6 @@ def main() -> int:
             timestamp=timestamp,
             input_image=input_image,
             input_images=init_images,
-            embeddings=all_embeddings,
         )
     else:
         print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
