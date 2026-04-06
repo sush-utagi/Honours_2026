@@ -26,6 +26,7 @@ from tqdm import tqdm
 WINDOW = 512
 BBOX_BUFFER = 0.1
 ZOOM_MARGIN = 1.5  # crop side = max(bbox width/height) * ZOOM_MARGIN
+MAX_PER_CLASS = 50_000  # hard cap on contextual crops per category
 
 
 def _contextual_crop(
@@ -124,6 +125,7 @@ def _process_split(
     output_root: Path,
     window: int = WINDOW,
     zoom_margin: float = ZOOM_MARGIN,
+    max_per_class: int = MAX_PER_CLASS,
 ) -> None:
     ann_path = input_root / "annotations" / f"instances_{split}.json"
     if not ann_path.exists():
@@ -149,6 +151,8 @@ def _process_split(
     annotations_out: List[Dict] = []
     next_image_id = 1
     next_ann_id = 1
+    class_counts: Dict[int, int] = {}  # category_id -> number of crops saved
+    skipped_by_cap = 0
 
     for img_id in tqdm(coco.getImgIds(), desc=f"{split} images"):
         img_info = coco.loadImgs([img_id])[0]
@@ -163,6 +167,13 @@ def _process_split(
         ann_ids = coco.getAnnIds(imgIds=[img_id])
         for ann_id in ann_ids:
             ann = coco.loadAnns([ann_id])[0]
+            cat_id = ann["category_id"]
+
+            # no more images if this class has already reached the per-class cap.
+            if class_counts.get(cat_id, 0) >= max_per_class:
+                skipped_by_cap += 1
+                continue
+
             bbox = ann.get("bbox", [0, 0, 0, 0])
 
             crop_np, new_bbox = _contextual_crop(
@@ -197,6 +208,7 @@ def _process_split(
 
             next_image_id += 1
             next_ann_id += 1
+            class_counts[cat_id] = class_counts.get(cat_id, 0) + 1
 
     output_json = {
         "info": {
@@ -215,6 +227,8 @@ def _process_split(
     print(
         f"[done] {split}: wrote {len(images_out)} crops to {out_img_dir} and annotations to {out_ann_path}"
     )
+    if skipped_by_cap:
+        print(f"[info] {split}: skipped {skipped_by_cap} annotations due to per-class cap of {max_per_class}")
 
 
 def _repartition_train_val(
@@ -225,10 +239,10 @@ def _repartition_train_val(
     """Create a stratified val split from train and promote old val to test.
 
     - Reads contextual crops: single_instances_train.json / single_instances_val.json
-    - Moves old val images -> images/test and writes single_instances_test.json
     - Stratifies the train split per category to carve out a new val portion,
-      preserving class balance; moves those images to images/val and rewrites
-      single_instances_train.json / single_instances_val.json with fresh ids.
+      preserving class balance.
+    - Promotes old val → test, **downsampled per-class** so the test set has the
+      same relative class distribution as the new train / val splits.
     """
 
     train_ann_path = output_root / "annotations" / "single_instances_train.json"
@@ -249,51 +263,8 @@ def _repartition_train_val(
     train_dir = output_root / "images" / "train"
     val_dir = output_root / "images" / "val"
     test_dir = output_root / "images" / "test"
-    if test_dir.exists():
-        shutil.rmtree(test_dir)
-    test_dir.mkdir(parents=True, exist_ok=True)
 
-    # Promote old val -> test
-    test_images = []
-    test_annotations = []
-    next_img_id = 1
-    next_ann_id = 1
-    img_map_val = {img["id"]: img for img in val_data.get("images", [])}
-    for ann in val_data.get("annotations", []):
-        img = img_map_val.get(ann["image_id"])
-        if not img:
-            continue
-        fname = img["file_name"]
-        src = val_dir / fname
-        dst = test_dir / fname
-        if src.exists():
-            shutil.move(src, dst)
-        new_img = {"id": next_img_id, "file_name": fname, "width": img["width"], "height": img["height"]}
-        new_ann = {
-            "id": next_ann_id,
-            "image_id": next_img_id,
-            "category_id": ann["category_id"],
-            "bbox": ann["bbox"],
-            "area": ann.get("area", 0.0),
-            "iscrowd": ann.get("iscrowd", 0),
-            "segmentation": [],
-        }
-        test_images.append(new_img)
-        test_annotations.append(new_ann)
-        next_img_id += 1
-        next_ann_id += 1
-
-    test_json = {
-        "info": {"description": "Contextual crops (test from original val)", "version": "1.0"},
-        "licenses": licenses,
-        "categories": categories,
-        "images": test_images,
-        "annotations": test_annotations,
-    }
-    with open(output_root / "annotations" / "single_instances_test.json", "w", encoding="utf-8") as f:
-        json.dump(test_json, f)
-
-    # Stratified carve-out: train -> new val
+    # train -> new train + new val (stratified)
     rng = random.Random(seed)
     img_map_train = {img["id"]: img for img in train_data.get("images", [])}
     by_cat: Dict[int, List[Tuple[Dict, Dict]]] = {}
@@ -313,10 +284,106 @@ def _repartition_train_val(
         selected_val.extend(items[:val_count])
         remaining_train.extend(items[val_count:])
 
-    # Move files and reindex
-    def _reindex_and_move(pairs: List[Tuple[Dict, Dict]], dest_dir: Path, start_img_id: int = 1, start_ann_id: int = 1):
-        images_out = []
-        annotations_out = []
+    # Target distribution: per-class counts in the new train set.
+    train_by_cat: Dict[int, int] = {}
+    for _, ann in remaining_train:
+        cat = ann["category_id"]
+        train_by_cat[cat] = train_by_cat.get(cat, 0) + 1
+
+    # old val -> test (downsampled per-class)
+    img_map_val = {img["id"]: img for img in val_data.get("images", [])}
+    test_pairs_raw: List[Tuple[Dict, Dict]] = []
+    for ann in val_data.get("annotations", []):
+        img = img_map_val.get(ann["image_id"])
+        if img is None:
+            continue
+        test_pairs_raw.append((img, ann))
+
+    # Group test pairs by category.
+    test_by_cat: Dict[int, List[Tuple[Dict, Dict]]] = {}
+    for pair in test_pairs_raw:
+        cat = pair[1]["category_id"]
+        test_by_cat.setdefault(cat, []).append(pair)
+
+    total_train = sum(train_by_cat.values())
+    aligned_test_pairs: List[Tuple[Dict, Dict]] = []
+    skipped_test = 0
+
+    if total_train > 0:
+        ratios = []
+        for cat, items in test_by_cat.items():
+            train_count = train_by_cat.get(cat, 0)
+            if train_count > 0:
+                ratios.append(len(items) / train_count)
+
+        if ratios:
+            min_ratio = min(ratios)
+            rng_test = random.Random(seed + 1)
+            for cat in sorted(test_by_cat.keys()):
+                items = test_by_cat[cat]
+                train_count = train_by_cat.get(cat, 0)
+                if train_count > 0:
+                    target = int(round(train_count * min_ratio))
+                else:
+                    target = 0  # class not in train → drop from test
+                target = min(target, len(items))
+                if target == 0 and len(items) > 0:
+                    print(f"[warn] cat {cat}: {len(items)} test crops available but target is 0 — class unrepresented in test")
+                rng_test.shuffle(items)
+                aligned_test_pairs.extend(items[:target])
+                skipped_test += len(items) - target
+        else:
+            aligned_test_pairs = test_pairs_raw
+    else:
+        aligned_test_pairs = test_pairs_raw
+
+    if test_dir.exists():
+        shutil.rmtree(test_dir)
+    test_dir.mkdir(parents=True, exist_ok=True)
+
+    test_images: List[Dict] = []
+    test_annotations: List[Dict] = []
+    next_img_id = 1
+    next_ann_id = 1
+    for img, ann in aligned_test_pairs:
+        fname = img["file_name"]
+        src = val_dir / fname
+        dst = test_dir / fname
+        if src.exists():
+            shutil.move(src, dst)
+        test_images.append({
+            "id": next_img_id, "file_name": fname,
+            "width": img["width"], "height": img["height"],
+        })
+        test_annotations.append({
+            "id": next_ann_id,
+            "image_id": next_img_id,
+            "category_id": ann["category_id"],
+            "bbox": ann["bbox"],
+            "area": ann.get("area", 0.0),
+            "iscrowd": ann.get("iscrowd", 0),
+            "segmentation": [],
+        })
+        next_img_id += 1
+        next_ann_id += 1
+
+    test_json = {
+        "info": {"description": "Contextual crops (test from original val, distribution-aligned)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": test_images,
+        "annotations": test_annotations,
+    }
+    with open(output_root / "annotations" / "single_instances_test.json", "w", encoding="utf-8") as f:
+        json.dump(test_json, f)
+
+    # train and val (stratified split)
+    def _reindex_and_move(
+        pairs: List[Tuple[Dict, Dict]], dest_dir: Path,
+        start_img_id: int = 1, start_ann_id: int = 1,
+    ):
+        images_out: List[Dict] = []
+        annotations_out: List[Dict] = []
         img_id = start_img_id
         ann_id = start_ann_id
         for img, ann in pairs:
@@ -325,23 +392,23 @@ def _repartition_train_val(
             dst = dest_dir / fname
             if src.exists() and src != dst:
                 shutil.move(src, dst)
-            images_out.append({"id": img_id, "file_name": fname, "width": img["width"], "height": img["height"]})
-            annotations_out.append(
-                {
-                    "id": ann_id,
-                    "image_id": img_id,
-                    "category_id": ann["category_id"],
-                    "bbox": ann["bbox"],
-                    "area": ann.get("area", 0.0),
-                    "iscrowd": ann.get("iscrowd", 0),
-                    "segmentation": [],
-                }
-            )
+            images_out.append({
+                "id": img_id, "file_name": fname,
+                "width": img["width"], "height": img["height"],
+            })
+            annotations_out.append({
+                "id": ann_id,
+                "image_id": img_id,
+                "category_id": ann["category_id"],
+                "bbox": ann["bbox"],
+                "area": ann.get("area", 0.0),
+                "iscrowd": ann.get("iscrowd", 0),
+                "segmentation": [],
+            })
             img_id += 1
             ann_id += 1
         return images_out, annotations_out
 
-    # Clear and recreate val dir for new split
     if val_dir.exists():
         shutil.rmtree(val_dir)
     val_dir.mkdir(parents=True, exist_ok=True)
@@ -371,9 +438,33 @@ def _repartition_train_val(
         json.dump(val_json, f)
 
     print(
-        f"[repartition] train images: {len(train_images)}, val images: {len(val_images)}, "
-        f"test images (from old val): {len(test_images)}"
+        f"\n[repartition] train: {len(train_images)}, val: {len(val_images)}, "
+        f"test: {len(test_images)} (dropped {skipped_test} test crops to align distribution)"
     )
+
+    def _cat_dist(annotations: List[Dict]) -> Dict[int, int]:
+        d: Dict[int, int] = {}
+        for a in annotations:
+            d[a["category_id"]] = d.get(a["category_id"], 0) + 1
+        return d
+
+    train_dist = _cat_dist(train_annotations)
+    val_dist = _cat_dist(val_annotations)
+    test_dist = _cat_dist(test_annotations)
+
+    all_cats = sorted(set(train_dist) | set(val_dist) | set(test_dist))
+    print(
+        f"\n{'cat':>6}  {'train':>8}  {'val':>8}  {'test':>8}"
+        f"  {'train%':>8}  {'val%':>8}  {'test%':>8}"
+    )
+    for cat in all_cats:
+        t = train_dist.get(cat, 0)
+        v = val_dist.get(cat, 0)
+        ts = test_dist.get(cat, 0)
+        tp = 100 * t / len(train_annotations) if train_annotations else 0
+        vp = 100 * v / len(val_annotations) if val_annotations else 0
+        tsp = 100 * ts / len(test_annotations) if test_annotations else 0
+        print(f"{cat:>6}  {t:>8}  {v:>8}  {ts:>8}  {tp:>7.2f}%  {vp:>7.2f}%  {tsp:>7.2f}%")
 
 
 def main() -> None:
@@ -407,11 +498,24 @@ def main() -> None:
         action="store_true",
         help="Create a new val split stratified from train, and promote original val to test.",
     )
+
+    # run this after the original train/val split is done. only if original COCO images are already processed.
+    parser.add_argument(
+        "--repartition-only",
+        action="store_true",
+        help="Skip image processing and only run the train/val/test repartitioning step.",
+    )
     parser.add_argument(
         "--val-ratio-from-train",
         type=float,
         default=0.1,
         help="Fraction of train (per class) to use for the new val split (default: 0.1).",
+    )
+    parser.add_argument(
+        "--max-per-class",
+        type=int,
+        default=MAX_PER_CLASS,
+        help=f"Maximum contextual crops per category (default: {MAX_PER_CLASS}).",
     )
     parser.add_argument(
         "--seed",
@@ -422,9 +526,11 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    for split in args.splits:
-        _process_split(split, args.input_root, args.output_root, args.window, args.zoom_margin)
-    if args.stratify_train_to_val:
+    if not args.repartition_only:
+        for split in args.splits:
+            _process_split(split, args.input_root, args.output_root, WINDOW, args.zoom_margin, args.max_per_class)
+
+    if args.stratify_train_to_val or args.repartition_only:
         _repartition_train_val(args.output_root, args.val_ratio_from_train, args.seed)
 
 

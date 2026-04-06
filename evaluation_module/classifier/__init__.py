@@ -8,7 +8,6 @@ from .resnet_classifier import (
     run_experiment,
     train_model,
 )
-from .cnn_classifier import SimpleCNN, run_cnn_experiment
 
 __all__ = [
     "build_resnet18",
@@ -19,6 +18,4 @@ __all__ = [
     "plot_training_curves",
     "run_experiment",
     "train_model",
-    "SimpleCNN",
-    "run_cnn_experiment",
 ]

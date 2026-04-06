@@ -4,12 +4,12 @@
 Supports both the baseline model and an experimental variant.
 
 RESUME TRAINING (examples):
-    python experiments/pipeline/train_model.py --model-type baseline --epochs 2 --resume-ckpt runs/baseline_model_A/checkpoints/last.pt
-    python experiments/pipeline/train_model.py --model-type experimental --epochs 2 --resume-ckpt runs/experimental_model_A/checkpoints/last.pt
+    python experiments/model/train_model.py --model-type baseline --epochs 2 --resume-ckpt runs/baseline_model_A/checkpoints/last.pt
+    python experiments/model/train_model.py --model-type experimental --epochs 2 --resume-ckpt runs/experimental_model_A/checkpoints/last.pt
 
 NEW TRAINING:
-    python experiments/pipeline/train_model.py --model-type baseline --epochs <NUM_EPOCHS>
-    python experiments/pipeline/train_model.py --model-type experimental --epochs <NUM_EPOCHS>
+    python experiments/model/train_model.py --model-type baseline --epochs <NUM_EPOCHS>
+    python experiments/model/train_model.py --model-type experimental --epochs <NUM_EPOCHS>
 """
 
 from __future__ import annotations

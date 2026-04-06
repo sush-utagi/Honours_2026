@@ -356,6 +356,8 @@ def train_model(
                 "val_acc": val_acc,
                 "best_val_acc": best_val_acc,
             }
+            # Ensure checkpoint directory exists before every save
+            os.makedirs(checkpoint_dir, exist_ok=True)
             # Save last every epoch
             last_path = os.path.join(checkpoint_dir, "last.pt")
             torch.save(ckpt, last_path)
@@ -422,7 +424,7 @@ def _precision_recall_points(y_true: np.ndarray, y_score: np.ndarray) -> Tuple[n
 
 def _average_precision(precision: np.ndarray, recall: np.ndarray) -> float:
     # trapezoidal area under PR curve
-    return float(np.trapz(precision, recall))
+    return float(np.trapezoid(precision, recall))
 
 
 def plot_precision_recall_curves(
@@ -434,24 +436,53 @@ def plot_precision_recall_curves(
     """Plot per-class precision–recall curves and return average precision per class."""
 
     num_classes = len(class_names)
-    fig, ax = plt.subplots(figsize=(7, 5))
+    fig, ax = plt.subplots(figsize=(10, 7))
     average_precisions: Dict[str, float] = {}
+    lines = []
 
     for cls_idx, cls_name in enumerate(class_names):
         y_true_c = (y_true == cls_idx).astype(int)
         precision, recall = _precision_recall_points(y_true_c, y_prob[:, cls_idx])
         ap = _average_precision(precision, recall)
         average_precisions[cls_name] = ap
-        ax.plot(recall, precision, label=f"{cls_name} (AP={ap:.3f})")
+        line, = ax.plot(recall, precision, label=f"{cls_name} (AP={ap:.3f})")
+        lines.append(line)
 
     ax.set_xlabel("Recall")
     ax.set_ylabel("Precision")
     ax.set_title("Precision-Recall Curves")
-    ax.legend()
     ax.grid(True)
-    plt.tight_layout()
+
+    # Place legend outside the plot to the right so it never overlaps curves
+    ax.legend(
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        fontsize=6,
+        ncol=max(1, (num_classes + 39) // 40),
+        borderaxespad=0,
+    )
+    fig.subplots_adjust(right=0.62)
+
     if save_path:
-        plt.savefig(save_path, dpi=200)
+        plt.savefig(save_path, dpi=200, bbox_inches="tight")
+
+        # Save a separate legend-only image for easy reference
+        legend_path = save_path.rsplit(".", 1)[0] + "_legend.png" if isinstance(save_path, str) else None
+        if legend_path:
+            fig_leg, ax_leg = plt.subplots(
+                figsize=(5, max(3, num_classes * 0.18))
+            )
+            ax_leg.axis("off")
+            ax_leg.legend(
+                handles=lines,
+                labels=[f"{n} (AP={average_precisions[n]:.3f})" for n in class_names],
+                loc="center",
+                fontsize=7,
+                ncol=1,
+            )
+            fig_leg.tight_layout()
+            plt.savefig(legend_path, dpi=150, bbox_inches="tight")
+            plt.close(fig_leg)
     else:
         plt.show()
     plt.close(fig)

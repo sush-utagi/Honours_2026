@@ -1,21 +1,23 @@
 ## Python version: 3.11.3
 
 torch==2.2.1
-torchvision==0.17.1 
+torchvision==0.17.1
 torchaudio==2.2.1
-numpy==1.25.0
-tqdm==4.65.0
-transformers==4.33.2
-lightning==2.0.9
-pillow==9.5.0
-matplotlib==3.7.2
-pycocotools==2.0.7
-pandas==2.1.4
-python-dotenv==1.0.1
-huggingface-hub==0.23.4
+numpy>=2.0
+tqdm>=4.65.0
+transformers>=4.33.2
+lightning>=2.0.9
+pillow>=10.0.0
+matplotlib>=3.8.0
+pycocotools>=2.0.7
+pandas>=2.2.0
+python-dotenv>=1.0.1
+huggingface-hub>=0.23.4
 diffusers
 accelerate
 ipykernel
 torchview
 graphviz
 compel
+umap-learn
+scikit-learn>=1.6

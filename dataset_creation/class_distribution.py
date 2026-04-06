@@ -42,12 +42,14 @@ def load_counts(split: str) -> tuple[List[str], Counter]:
 
 
 def plot_split(split: str, names: List[str], counts: Counter, ax):
-    values = [counts.get(n, 0) for n in names]
-    ax.bar(range(len(names)), values, color="#4C8BF5")
+    # Sort classes from highest count to lowest
+    sorted_names = sorted(names, key=lambda n: counts.get(n, 0), reverse=True)
+    values = [counts.get(n, 0) for n in sorted_names]
+    ax.bar(range(len(sorted_names)), values, color="#4C8BF5")
     ax.set_title(f"{split} (n={sum(values):,})")
     ax.set_ylabel("Count")
-    ax.set_xticks(range(len(names)))
-    ax.set_xticklabels(names, rotation=90, fontsize=7)
+    ax.set_xticks(range(len(sorted_names)))
+    ax.set_xticklabels(sorted_names, rotation=90, fontsize=7)
 
 
 def main():
