@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import argparse
 import json
 import os
 import sys
+import warnings
 from datetime import datetime
 from pathlib import Path
 
 from PIL import Image
-from dotenv import load_dotenv
 from transformers import CLIPTokenizer
 import torch
 
@@ -21,7 +24,7 @@ def _select_device(allow_cuda: bool, allow_mps: bool) -> str:
     device = "cpu"
     if torch.cuda.is_available() and allow_cuda:
         device = "cuda"
-    elif (torch.has_mps or torch.backends.mps.is_available()) and allow_mps:
+    elif (torch.backends.mps.is_built() or torch.backends.mps.is_available()) and allow_mps:
         device = "mps"
     return device
 
@@ -89,54 +92,100 @@ def _resolve_diffusers_scheduler(config, sampler_name: str):
     return None
 
 
+def _is_sdxl_model(model_id: str) -> bool:
+    lower = model_id.lower()
+    return "sdxl" in lower or "stable-diffusion-xl" in lower
+
+
+def _is_local_weights_file(path: str) -> bool:
+    return path.endswith((".safetensors", ".ckpt"))
+
+
 def _prepare_diffusers_pipelines(device: str, sampler_name: str):
     try:
-        from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionPipeline
+        from diffusers import (
+            StableDiffusionPipeline,
+            StableDiffusionImg2ImgPipeline,
+            StableDiffusionXLPipeline,
+            StableDiffusionXLImg2ImgPipeline,
+        )
     except ImportError as exc:
         raise RuntimeError(
             "USE_HG_DIFFUSERS is set but the 'diffusers' package is not installed. "
         ) from exc
-    
-    from compel import Compel
+
+    from compel import Compel, ReturnedEmbeddingsType
 
     model_id_env = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip()
     model_id = model_id_env or "runwayml/stable-diffusion-v1-5"
-    # MPS can produce black outputs with float16; keep fp16 only on CUDA, fp32 elsewhere.
+    is_xl = _is_sdxl_model(model_id)
+    is_local = _is_local_weights_file(model_id)
+
+    # MPS can produce black outputs with float16; keep fp16 only on CUDA else: fp32
     torch_dtype = torch.float16 if device == "cuda" else torch.float32
     safety_enabled = _env_flag("ENABLE_SAFETY_CHECKER")
 
     pipeline_kwargs = {"torch_dtype": torch_dtype}
-    if not safety_enabled:
+    if not is_xl and not safety_enabled:
         pipeline_kwargs["safety_checker"] = None
         pipeline_kwargs["feature_extractor"] = None
 
-    text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
+    load_method = "from_single_file (local)" if is_local else "from_pretrained"
+    print(f"[pipeline] loading {'SDXL' if is_xl else 'SD 1.x'} model: {model_id} ({load_method})")
+
+    if is_local:
+        # Load from a local .safetensors or .ckpt file
+        if not Path(model_id).exists():
+            raise FileNotFoundError(f"Local weights file not found: {model_id}")
+        PipelineClass = StableDiffusionXLPipeline if is_xl else StableDiffusionPipeline
+        text2img = PipelineClass.from_single_file(model_id, **pipeline_kwargs)
+    elif is_xl:
+        text2img = StableDiffusionXLPipeline.from_pretrained(model_id, **pipeline_kwargs)
+    else:
+        text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
+
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
         text2img.scheduler = scheduler
     text2img = text2img.to(device)
     text2img.enable_attention_slicing()
-    if hasattr(text2img, "enable_vae_slicing"):
-        text2img.enable_vae_slicing()
+    if hasattr(text2img, "vae") and hasattr(text2img.vae, "enable_slicing"):
+        text2img.vae.enable_slicing()
     text2img.set_progress_bar_config(disable=True)
 
-    img2img = StableDiffusionImg2ImgPipeline(**text2img.components)
+    if is_xl:
+        img2img = StableDiffusionXLImg2ImgPipeline(**text2img.components)
+    else:
+        img2img = StableDiffusionImg2ImgPipeline(**text2img.components)
+
     scheduler_img = _resolve_diffusers_scheduler(img2img.scheduler.config, sampler_name)
     if scheduler_img is not None:
         img2img.scheduler = scheduler_img
     img2img = img2img.to(device)
     img2img.enable_attention_slicing()
-    if hasattr(img2img, "enable_vae_slicing"):
-        img2img.enable_vae_slicing()
+    if hasattr(img2img, "vae") and hasattr(img2img.vae, "enable_slicing"):
+        img2img.vae.enable_slicing()
     img2img.set_progress_bar_config(disable=True)
 
-    compel = Compel(
-        tokenizer=text2img.tokenizer,
-        text_encoder=text2img.text_encoder,
-    )
+    # Compel setup differs between SD 1.x (single tokenizer) and SDXL (dual tokenizer)
+    if is_xl:
+        # Suppress "passing multiple tokenizers/text encoders is deprecated" –
+        # the replacement (CompelForSDXL) isn't available until compel v3.
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message="passing multiple tokenizers", category=DeprecationWarning)
+            compel = Compel(
+                tokenizer=[text2img.tokenizer, text2img.tokenizer_2],
+                text_encoder=[text2img.text_encoder, text2img.text_encoder_2],
+                returned_embeddings_type=ReturnedEmbeddingsType.PENULTIMATE_HIDDEN_STATES_NON_NORMALIZED,
+                requires_pooled=[False, True],
+            )
+    else:
+        compel = Compel(
+            tokenizer=text2img.tokenizer,
+            text_encoder=text2img.text_encoder,
+        )
 
-
-    return text2img, img2img, compel
+    return text2img, img2img, compel, is_xl
 
 
 def _generate_with_diffusers(
@@ -152,7 +201,7 @@ def _generate_with_diffusers(
     input_image: Image.Image | None,
     input_images: list[str] | None = None,
 ):
-    text2img, img2img, compel = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler)
+    text2img, img2img, compel, is_xl = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler)
     img_paths = input_images if input_images is not None else [""] * len(prompts)
 
     for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path in zip(
@@ -164,28 +213,42 @@ def _generate_with_diffusers(
         generator = torch.Generator(device=generator_device).manual_seed(seed)
         guidance_scale = 9.0 if args.no_cfg else cfg_scale
 
-        prompt_embeds = compel(prompt)
-        neg_prompt_embeds = compel(neg_prompt)
-        prompt_embeds, neg_prompt_embeds = compel.pad_conditioning_tensors_to_same_length([prompt_embeds, neg_prompt_embeds])
+        # SDXL compel returns (embeds, pooled) but  1.x returns just embeds
+        if is_xl:
+            prompt_embeds, pooled_prompt = compel(prompt)
+            neg_prompt_embeds, neg_pooled_prompt = compel(neg_prompt)
+            prompt_embeds, neg_prompt_embeds = compel.pad_conditioning_tensors_to_same_length(
+                [prompt_embeds, neg_prompt_embeds]
+            )
+        else:
+            prompt_embeds = compel(prompt)
+            neg_prompt_embeds = compel(neg_prompt)
+            prompt_embeds, neg_prompt_embeds = compel.pad_conditioning_tensors_to_same_length(
+                [prompt_embeds, neg_prompt_embeds]
+            )
+            pooled_prompt = None
+            neg_pooled_prompt = None
+
+        # Build common kwargs; add pooled embeds for SDXL
+        common_kwargs = {
+            "prompt_embeds": prompt_embeds,
+            "negative_prompt_embeds": neg_prompt_embeds,
+            "guidance_scale": guidance_scale,
+            "num_inference_steps": n_steps,
+            "generator": generator,
+        }
+        if is_xl:
+            common_kwargs["pooled_prompt_embeds"] = pooled_prompt
+            common_kwargs["negative_pooled_prompt_embeds"] = neg_pooled_prompt
 
         if active_image is not None:
             result = img2img(
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=neg_prompt_embeds,
                 image=active_image,
                 strength=args.strength,
-                guidance_scale=guidance_scale,
-                num_inference_steps=n_steps,
-                generator=generator,
+                **common_kwargs,
             )
         else:
-            result = text2img(
-                prompt_embeds=prompt_embeds,
-                negative_prompt_embeds=neg_prompt_embeds,
-                guidance_scale=guidance_scale,
-                num_inference_steps=n_steps,
-                generator=generator,
-            )
+            result = text2img(**common_kwargs)
 
         image = result.images[0]
         seed_suffix = f"seed{seed}"
@@ -214,13 +277,6 @@ def _generate_with_local_sd(
     vocab_path = data_dir / "vocab.json"
     merges_path = data_dir / "merges.txt"
     weights_path = "/Users/susheelutagi/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.ckpt"
-
-    # missing = [p for p in (vocab_path, merges_path, weights_path) if not p.exists()]
-    # if missing:
-    #     missing_str = ", ".join(str(p) for p in missing)
-    #     raise FileNotFoundError(
-    #         f"Missing diffusion resources: {missing_str}. Run ./scripts/get_resources.sh to download them."
-    #     )
 
     if str(sd_dir) not in sys.path:
         sys.path.insert(0, str(sd_dir))
@@ -260,8 +316,6 @@ def _generate_with_local_sd(
 
 
 def main() -> int:
-    load_dotenv()
-
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
     parser.add_argument("--prompt", help="Text prompt (ignored when --from-json is used).", required=False)
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
@@ -351,7 +405,8 @@ def main() -> int:
 
 
     if use_hg_diffusers:
-        print("USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend (runwayml/stable-diffusion-v1-5).")
+        model_id = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip() or "runwayml/stable-diffusion-v1-5"
+        print(f"USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend ({model_id}).")
         _generate_with_diffusers(
             args=args,
             device=device,
