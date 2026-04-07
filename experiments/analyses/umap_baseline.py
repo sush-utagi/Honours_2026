@@ -380,7 +380,7 @@ def main() -> None:
     )
     parser.add_argument(
         "--ckpt",
-        default="runs/baseline_model_large/checkpoints/best.pt",
+        default="runs/baseline_model_A/checkpoints/best.pt",
         help="Path to the best.pt checkpoint.",
     )
     parser.add_argument(

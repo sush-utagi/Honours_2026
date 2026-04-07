@@ -14,12 +14,28 @@ from pathlib import Path
 
 import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageDraw
 from transformers import CLIPTokenizer
 import torch
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def polygon_to_mask(segmentation: list[list[float]], image_height: int = 512, image_width: int = 512) -> Image.Image:
+    """
+    Convert pre-scaled COCO polygon segmentations into a binary mask image for ControlNet.
+    segmentation: list of flat lists of [x1, y1, x2, y2, ...] coordinates natively in 512x512 space.
+    """
+    mask = Image.new('L', (image_width, image_height), 0)
+    for poly in segmentation:
+        if not poly or len(poly) < 4:
+            continue
+        polygon = list(zip(poly[0::2], poly[1::2]))
+        ImageDraw.Draw(mask).polygon(polygon, outline=255, fill=255)
+    
+    # Needs to be 3-channel RGB for diffusers pipelines
+    return mask.convert('RGB')
 
 
 def _select_device(allow_cuda: bool, allow_mps: bool) -> str:
@@ -101,7 +117,7 @@ def _is_local_weights_file(path: str) -> bool:
     return path.endswith((".safetensors", ".ckpt"))
 
 
-def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool = False):
+def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool = False, use_segnet: bool = False):
     try:
         from diffusers import (
             StableDiffusionPipeline,
@@ -135,19 +151,26 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool
 
     controlnet = None
 
-    # controlnet CANNY
-    if use_canny:
-        controlnet_model_id = (
-            "diffusers/controlnet-canny-sdxl-1.0" if is_xl
-            else "lllyasviel/sd-controlnet-canny"
-        )
-        print(f"[pipeline] loading ControlNet (Canny): {controlnet_model_id}")
+    # controlnet init
+    if use_canny or use_segnet:
+        if use_segnet:
+            controlnet_model_id = (
+                "diffusers/controlnet-canny-sdxl-1.0" if is_xl  # Fallback
+                else "lllyasviel/sd-controlnet-seg"
+            )
+            print(f"[pipeline] loading ControlNet (Segmentation): {controlnet_model_id}")
+        else:
+            controlnet_model_id = (
+                "diffusers/controlnet-canny-sdxl-1.0" if is_xl
+                else "lllyasviel/sd-controlnet-canny"
+            )
+            print(f"[pipeline] loading ControlNet (Canny): {controlnet_model_id}")
         controlnet = ControlNetModel.from_pretrained(controlnet_model_id, torch_dtype=torch_dtype)
 
     load_method = "from_single_file (local)" if is_local else "from_pretrained"
     print(f"[pipeline] loading {'SDXL' if is_xl else 'SD 1.x'} model: {model_id} ({load_method})")
 
-    if use_canny and controlnet is not None:
+    if (use_canny or use_segnet) and controlnet is not None:
         if is_local:
             if not Path(model_id).exists():
                 raise FileNotFoundError(f"Local weights file not found: {model_id}")
@@ -229,16 +252,19 @@ def _generate_with_diffusers(
     timestamp: str,
     input_image: Image.Image | None,
     input_images: list[str] | None = None,
+    segmentations: list[list[list[float]]] | None = None,
     use_canny: bool = False,
+    use_segnet: bool = False,
     control_scale: float = 1.0,
 ):
     text2img, img2img, compel, is_xl = _prepare_diffusers_pipelines(
-        device=device, sampler_name=args.sampler, use_canny=use_canny,
+        device=device, sampler_name=args.sampler, use_canny=use_canny, use_segnet=use_segnet,
     )
     img_paths = input_images if input_images is not None else [""] * len(prompts)
+    segs = segmentations if segmentations is not None else [[]] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds, img_paths
+    for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path, seg in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds, img_paths, segs
     ):
         active_image = Image.open(img_path).convert("RGB") if img_path else input_image
 
@@ -274,7 +300,14 @@ def _generate_with_diffusers(
             common_kwargs["pooled_prompt_embeds"] = pooled_prompt
             common_kwargs["negative_pooled_prompt_embeds"] = neg_pooled_prompt
 
-        if use_canny and active_image is not None:
+        if use_segnet and seg:
+            mask_rgb = polygon_to_mask(seg, image_height=512, image_width=512)
+            result = text2img(
+                image=mask_rgb,
+                controlnet_conditioning_scale=control_scale,
+                **common_kwargs,
+            )
+        elif use_canny and active_image is not None:
             image_array = np.array(active_image)
             edges = cv2.Canny(image_array, 100, 200)
             # Convert single-channel edge map to 3-channel RGB PIL Image
@@ -377,6 +410,7 @@ def main() -> int:
     parser.add_argument("--allow-cuda", action="store_true", help="Allow CUDA if available.")
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
     parser.add_argument("--use-canny", action="store_true", help="Use Canny Edge ControlNet for generation.")
+    parser.add_argument("--use-segnet", action="store_true", help="Use Segmentation ControlNet for generation.")
     parser.add_argument("--control-scale", type=float, default=1.0, help="ControlNet conditioning scale (0.0–1.0).")
 
     args = parser.parse_args()
@@ -415,6 +449,7 @@ def main() -> int:
         cfg_schedule: list[float] = []
         steps_schedule: list[int] = []
         init_images: list[str] = []
+        segmentations: list[list[list[float]]] = []
 
         for idx, sample in enumerate(samples):
             if not isinstance(sample, dict):
@@ -427,6 +462,7 @@ def main() -> int:
             cfg_schedule.append(float(sample.get("cfg_scale", args.cfg_scale)))
             steps_schedule.append(int(sample.get("steps", args.steps)))
             init_images.append(sample.get("init_image", ""))
+            segmentations.append(sample.get("segmentation", []))
 
         num_images = len(prompts)
         outdir = outdir / coco_class
@@ -464,7 +500,9 @@ def main() -> int:
             timestamp=timestamp,
             input_image=input_image,
             input_images=init_images,
+            segmentations=segmentations if args.from_json else None,
             use_canny=args.use_canny,
+            use_segnet=args.use_segnet,
             control_scale=args.control_scale,
         )
     else:

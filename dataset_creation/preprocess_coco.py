@@ -32,10 +32,11 @@ MAX_PER_CLASS = 50_000  # hard cap on contextual crops per category
 def _contextual_crop(
     image: np.ndarray,
     bbox: List[float],
+    segmentation: List[List[float]] = None,
     window: int = WINDOW,
     buffer: float = BBOX_BUFFER,
     zoom_margin: float = ZOOM_MARGIN,
-) -> Tuple[np.ndarray, List[float]]:
+) -> Tuple[np.ndarray, List[float], List[List[float]]]:
     """Return a padded crop centered on the object and the remapped bbox.
 
     Dynamic crop side = max(bbox width, bbox height) * zoom_margin (falls back
@@ -116,7 +117,26 @@ def _contextual_crop(
     w_new = max(0.0, x2_cl - x1_cl)
     h_new = max(0.0, y2_cl - y1_cl)
 
-    return crop, [x1_cl, y1_cl, w_new, h_new]
+    new_segmentation = []
+    if segmentation is not None:
+        for poly in segmentation:
+            if not isinstance(poly, list):
+                continue
+            new_poly = []
+            for i in range(0, len(poly), 2):
+                px = poly[i]
+                py = poly[i+1]
+                px_crop = px - left
+                py_crop = py - top
+                px_scaled = px_crop * scale
+                py_scaled = py_crop * scale
+                px_cl = max(0.0, min(float(window), px_scaled)) # clamp to window
+                py_cl = max(0.0, min(float(window), py_scaled))
+                
+                new_poly.extend([px_cl, py_cl])
+            new_segmentation.append(new_poly)
+
+    return crop, [x1_cl, y1_cl, w_new, h_new], new_segmentation
 
 
 def _process_split(
@@ -142,6 +162,7 @@ def _process_split(
     out_img_dir = output_root / "images" / split
     out_img_dir.mkdir(parents=True, exist_ok=True)
     out_ann_path = output_root / "annotations" / f"single_instances_{split}.json"
+    out_seg_path = output_root / "annotations" / f"single_segmentations_{split}.json"
     out_ann_path.parent.mkdir(parents=True, exist_ok=True)
 
     categories = coco.dataset.get("categories", [])
@@ -149,6 +170,7 @@ def _process_split(
 
     images_out: List[Dict] = []
     annotations_out: List[Dict] = []
+    segmentations_out: List[Dict] = []
     next_image_id = 1
     next_ann_id = 1
     class_counts: Dict[int, int] = {}  # category_id -> number of crops saved
@@ -169,15 +191,19 @@ def _process_split(
             ann = coco.loadAnns([ann_id])[0]
             cat_id = ann["category_id"]
 
+            # skip crowd annotations -> incompatible with our task of single object classification
+            if ann.get("iscrowd", 0) == 1: continue 
+
             # no more images if this class has already reached the per-class cap.
             if class_counts.get(cat_id, 0) >= max_per_class:
                 skipped_by_cap += 1
                 continue
 
             bbox = ann.get("bbox", [0, 0, 0, 0])
+            segmentation = ann.get("segmentation", [])
 
-            crop_np, new_bbox = _contextual_crop(
-                img_np, bbox, window=window, buffer=BBOX_BUFFER, zoom_margin=zoom_margin
+            crop_np, new_bbox, new_seg = _contextual_crop(
+                img_np, bbox, segmentation=segmentation, window=window, buffer=BBOX_BUFFER, zoom_margin=zoom_margin
             )
             if new_bbox[2] <= 0 or new_bbox[3] <= 0:
                 continue
@@ -201,8 +227,17 @@ def _process_split(
                     "category_id": ann["category_id"],
                     "bbox": new_bbox,
                     "area": float(new_bbox[2] * new_bbox[3]),
-                    "iscrowd": ann.get("iscrowd", 0),
+                    "iscrowd": 0,
                     "segmentation": [],
+                }
+            )
+
+            segmentations_out.append(
+                {
+                    "id": next_ann_id,
+                    "image_id": next_image_id,
+                    "category_id": ann["category_id"],
+                    "segmentation": new_seg,
                 }
             )
 
@@ -220,12 +255,25 @@ def _process_split(
         "images": images_out,
         "annotations": annotations_out,
     }
+    
+    seg_output_json = {
+        "info": {
+            "description": "COCO 2017 contextual crops (segmentation masks)",
+            "version": "1.0",
+        },
+        "licenses": licenses,
+        "categories": categories,
+        "images": images_out,
+        "annotations": segmentations_out,
+    }
 
     with open(out_ann_path, "w", encoding="utf-8") as f:
         json.dump(output_json, f)
+    with open(out_seg_path, "w", encoding="utf-8") as f:
+        json.dump(seg_output_json, f)
 
     print(
-        f"[done] {split}: wrote {len(images_out)} crops to {out_img_dir} and annotations to {out_ann_path}"
+        f"[done] {split}: wrote {len(images_out)} crops to {out_img_dir} and annotations to {out_ann_path} / {out_seg_path.name}"
     )
     if skipped_by_cap:
         print(f"[info] {split}: skipped {skipped_by_cap} annotations due to per-class cap of {max_per_class}")
@@ -247,6 +295,8 @@ def _repartition_train_val(
 
     train_ann_path = output_root / "annotations" / "single_instances_train.json"
     val_ann_path = output_root / "annotations" / "single_instances_val.json"
+    train_seg_path = output_root / "annotations" / "single_segmentations_train.json"
+    val_seg_path = output_root / "annotations" / "single_segmentations_val.json"
 
     if not train_ann_path.exists() or not val_ann_path.exists():
         print("[warn] Cannot repartition: missing contextual train/val annotations.")
@@ -257,6 +307,11 @@ def _repartition_train_val(
     with open(val_ann_path, "r", encoding="utf-8") as f:
         val_data = json.load(f)
 
+    with open(train_seg_path, "r", encoding="utf-8") as f:
+        train_seg_data = json.load(f)
+    with open(val_seg_path, "r", encoding="utf-8") as f:
+        val_seg_data = json.load(f)
+
     categories = train_data.get("categories", [])
     licenses = train_data.get("licenses", [])
 
@@ -264,18 +319,22 @@ def _repartition_train_val(
     val_dir = output_root / "images" / "val"
     test_dir = output_root / "images" / "test"
 
+    train_seg_map = {ann["id"]: ann for ann in train_seg_data.get("annotations", [])}
+    val_seg_map = {ann["id"]: ann for ann in val_seg_data.get("annotations", [])}
+
     # train -> new train + new val (stratified)
     rng = random.Random(seed)
     img_map_train = {img["id"]: img for img in train_data.get("images", [])}
-    by_cat: Dict[int, List[Tuple[Dict, Dict]]] = {}
+    by_cat: Dict[int, List[Tuple[Dict, Dict, Dict]]] = {}
     for ann in train_data.get("annotations", []):
         img = img_map_train.get(ann["image_id"])
-        if img is None:
+        seg_ann = train_seg_map.get(ann["id"])
+        if img is None or seg_ann is None:
             continue
-        by_cat.setdefault(ann["category_id"], []).append((img, ann))
+        by_cat.setdefault(ann["category_id"], []).append((img, ann, seg_ann))
 
-    selected_val: List[Tuple[Dict, Dict]] = []
-    remaining_train: List[Tuple[Dict, Dict]] = []
+    selected_val: List[Tuple[Dict, Dict, Dict]] = []
+    remaining_train: List[Tuple[Dict, Dict, Dict]] = []
     for cat, items in by_cat.items():
         rng.shuffle(items)
         val_count = int(round(len(items) * val_ratio))
@@ -286,27 +345,28 @@ def _repartition_train_val(
 
     # Target distribution: per-class counts in the new train set.
     train_by_cat: Dict[int, int] = {}
-    for _, ann in remaining_train:
+    for _, ann, _ in remaining_train:
         cat = ann["category_id"]
         train_by_cat[cat] = train_by_cat.get(cat, 0) + 1
 
     # old val -> test (downsampled per-class)
     img_map_val = {img["id"]: img for img in val_data.get("images", [])}
-    test_pairs_raw: List[Tuple[Dict, Dict]] = []
+    test_pairs_raw: List[Tuple[Dict, Dict, Dict]] = []
     for ann in val_data.get("annotations", []):
         img = img_map_val.get(ann["image_id"])
-        if img is None:
+        seg_ann = val_seg_map.get(ann["id"])
+        if img is None or seg_ann is None:
             continue
-        test_pairs_raw.append((img, ann))
+        test_pairs_raw.append((img, ann, seg_ann))
 
     # Group test pairs by category.
-    test_by_cat: Dict[int, List[Tuple[Dict, Dict]]] = {}
+    test_by_cat: Dict[int, List[Tuple[Dict, Dict, Dict]]] = {}
     for pair in test_pairs_raw:
         cat = pair[1]["category_id"]
         test_by_cat.setdefault(cat, []).append(pair)
 
     total_train = sum(train_by_cat.values())
-    aligned_test_pairs: List[Tuple[Dict, Dict]] = []
+    aligned_test_pairs: List[Tuple[Dict, Dict, Dict]] = []
     skipped_test = 0
 
     if total_train > 0:
@@ -343,9 +403,10 @@ def _repartition_train_val(
 
     test_images: List[Dict] = []
     test_annotations: List[Dict] = []
+    test_segmentations: List[Dict] = []
     next_img_id = 1
     next_ann_id = 1
-    for img, ann in aligned_test_pairs:
+    for img, ann, seg_ann in aligned_test_pairs:
         fname = img["file_name"]
         src = val_dir / fname
         dst = test_dir / fname
@@ -361,8 +422,14 @@ def _repartition_train_val(
             "category_id": ann["category_id"],
             "bbox": ann["bbox"],
             "area": ann.get("area", 0.0),
-            "iscrowd": ann.get("iscrowd", 0),
+            "iscrowd": 0,
             "segmentation": [],
+        })
+        test_segmentations.append({
+            "id": next_ann_id,
+            "image_id": next_img_id,
+            "category_id": seg_ann["category_id"],
+            "segmentation": seg_ann["segmentation"],
         })
         next_img_id += 1
         next_ann_id += 1
@@ -374,19 +441,29 @@ def _repartition_train_val(
         "images": test_images,
         "annotations": test_annotations,
     }
+    test_seg_json = {
+        "info": {"description": "Contextual crops segmentations (test)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": test_images,
+        "annotations": test_segmentations,
+    }
     with open(output_root / "annotations" / "single_instances_test.json", "w", encoding="utf-8") as f:
         json.dump(test_json, f)
+    with open(output_root / "annotations" / "single_segmentations_test.json", "w", encoding="utf-8") as f:
+        json.dump(test_seg_json, f)
 
     # train and val (stratified split)
     def _reindex_and_move(
-        pairs: List[Tuple[Dict, Dict]], dest_dir: Path,
+        pairs: List[Tuple[Dict, Dict, Dict]], dest_dir: Path,
         start_img_id: int = 1, start_ann_id: int = 1,
     ):
         images_out: List[Dict] = []
         annotations_out: List[Dict] = []
+        segmentations_out: List[Dict] = []
         img_id = start_img_id
         ann_id = start_ann_id
-        for img, ann in pairs:
+        for img, ann, seg_ann in pairs:
             fname = img["file_name"]
             src = train_dir / fname
             dst = dest_dir / fname
@@ -402,20 +479,26 @@ def _repartition_train_val(
                 "category_id": ann["category_id"],
                 "bbox": ann["bbox"],
                 "area": ann.get("area", 0.0),
-                "iscrowd": ann.get("iscrowd", 0),
+                "iscrowd": 0,
                 "segmentation": [],
+            })
+            segmentations_out.append({
+                "id": ann_id,
+                "image_id": img_id,
+                "category_id": seg_ann["category_id"],
+                "segmentation": seg_ann["segmentation"],
             })
             img_id += 1
             ann_id += 1
-        return images_out, annotations_out
+        return images_out, annotations_out, segmentations_out
 
     if val_dir.exists():
         shutil.rmtree(val_dir)
     val_dir.mkdir(parents=True, exist_ok=True)
     train_dir.mkdir(parents=True, exist_ok=True)
 
-    train_images, train_annotations = _reindex_and_move(remaining_train, train_dir)
-    val_images, val_annotations = _reindex_and_move(selected_val, val_dir)
+    train_images, train_annotations, train_segmentations = _reindex_and_move(remaining_train, train_dir)
+    val_images, val_annotations, val_segmentations = _reindex_and_move(selected_val, val_dir)
 
     train_json = {
         "info": {"description": "Contextual crops (train, rebalanced)", "version": "1.0"},
@@ -431,11 +514,29 @@ def _repartition_train_val(
         "images": val_images,
         "annotations": val_annotations,
     }
+    train_seg_json = {
+        "info": {"description": "Contextual crops segmentations (train)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": train_images,
+        "annotations": train_segmentations,
+    }
+    val_seg_json = {
+        "info": {"description": "Contextual crops segmentations (val)", "version": "1.0"},
+        "licenses": licenses,
+        "categories": categories,
+        "images": val_images,
+        "annotations": val_segmentations,
+    }
 
     with open(train_ann_path, "w", encoding="utf-8") as f:
         json.dump(train_json, f)
     with open(val_ann_path, "w", encoding="utf-8") as f:
         json.dump(val_json, f)
+    with open(train_seg_path, "w", encoding="utf-8") as f:
+        json.dump(train_seg_json, f)
+    with open(val_seg_path, "w", encoding="utf-8") as f:
+        json.dump(val_seg_json, f)
 
     print(
         f"\n[repartition] train: {len(train_images)}, val: {len(val_images)}, "
