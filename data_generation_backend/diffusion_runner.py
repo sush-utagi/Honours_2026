@@ -12,6 +12,8 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
+import cv2
+import numpy as np
 from PIL import Image
 from transformers import CLIPTokenizer
 import torch
@@ -30,8 +32,6 @@ def _select_device(allow_cuda: bool, allow_mps: bool) -> str:
 
 
 def _env_flag(var_name: str) -> bool:
-    """Return True when the environment variable looks truthy."""
-
     val = os.getenv(var_name, "").strip().lower()
     return val == 'true'
 
@@ -101,13 +101,16 @@ def _is_local_weights_file(path: str) -> bool:
     return path.endswith((".safetensors", ".ckpt"))
 
 
-def _prepare_diffusers_pipelines(device: str, sampler_name: str):
+def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool = False):
     try:
         from diffusers import (
             StableDiffusionPipeline,
             StableDiffusionImg2ImgPipeline,
             StableDiffusionXLPipeline,
             StableDiffusionXLImg2ImgPipeline,
+            ControlNetModel,
+            StableDiffusionControlNetPipeline,
+            StableDiffusionXLControlNetPipeline,
         )
     except ImportError as exc:
         raise RuntimeError(
@@ -130,19 +133,44 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str):
         pipeline_kwargs["safety_checker"] = None
         pipeline_kwargs["feature_extractor"] = None
 
+    controlnet = None
+
+    # controlnet CANNY
+    if use_canny:
+        controlnet_model_id = (
+            "diffusers/controlnet-canny-sdxl-1.0" if is_xl
+            else "lllyasviel/sd-controlnet-canny"
+        )
+        print(f"[pipeline] loading ControlNet (Canny): {controlnet_model_id}")
+        controlnet = ControlNetModel.from_pretrained(controlnet_model_id, torch_dtype=torch_dtype)
+
     load_method = "from_single_file (local)" if is_local else "from_pretrained"
     print(f"[pipeline] loading {'SDXL' if is_xl else 'SD 1.x'} model: {model_id} ({load_method})")
 
-    if is_local:
-        # Load from a local .safetensors or .ckpt file
-        if not Path(model_id).exists():
-            raise FileNotFoundError(f"Local weights file not found: {model_id}")
-        PipelineClass = StableDiffusionXLPipeline if is_xl else StableDiffusionPipeline
-        text2img = PipelineClass.from_single_file(model_id, **pipeline_kwargs)
-    elif is_xl:
-        text2img = StableDiffusionXLPipeline.from_pretrained(model_id, **pipeline_kwargs)
+    if use_canny and controlnet is not None:
+        if is_local:
+            if not Path(model_id).exists():
+                raise FileNotFoundError(f"Local weights file not found: {model_id}")
+            PipelineClass = StableDiffusionXLControlNetPipeline if is_xl else StableDiffusionControlNetPipeline
+            text2img = PipelineClass.from_single_file(model_id, controlnet=controlnet, **pipeline_kwargs)
+        elif is_xl:
+            text2img = StableDiffusionXLControlNetPipeline.from_pretrained(
+                model_id, controlnet=controlnet, **pipeline_kwargs
+            )
+        else:
+            text2img = StableDiffusionControlNetPipeline.from_pretrained(
+                model_id, controlnet=controlnet, **pipeline_kwargs
+            )
     else:
-        text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
+        if is_local:
+            if not Path(model_id).exists():
+                raise FileNotFoundError(f"Local weights file not found: {model_id}")
+            PipelineClass = StableDiffusionXLPipeline if is_xl else StableDiffusionPipeline
+            text2img = PipelineClass.from_single_file(model_id, **pipeline_kwargs)
+        elif is_xl:
+            text2img = StableDiffusionXLPipeline.from_pretrained(model_id, **pipeline_kwargs)
+        else:
+            text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
 
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
@@ -153,10 +181,11 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str):
         text2img.vae.enable_slicing()
     text2img.set_progress_bar_config(disable=True)
 
+    img2img_components = {k: v for k, v in text2img.components.items() if k != "controlnet"}
     if is_xl:
-        img2img = StableDiffusionXLImg2ImgPipeline(**text2img.components)
+        img2img = StableDiffusionXLImg2ImgPipeline(**img2img_components)
     else:
-        img2img = StableDiffusionImg2ImgPipeline(**text2img.components)
+        img2img = StableDiffusionImg2ImgPipeline(**img2img_components)
 
     scheduler_img = _resolve_diffusers_scheduler(img2img.scheduler.config, sampler_name)
     if scheduler_img is not None:
@@ -200,8 +229,12 @@ def _generate_with_diffusers(
     timestamp: str,
     input_image: Image.Image | None,
     input_images: list[str] | None = None,
+    use_canny: bool = False,
+    control_scale: float = 1.0,
 ):
-    text2img, img2img, compel, is_xl = _prepare_diffusers_pipelines(device=device, sampler_name=args.sampler)
+    text2img, img2img, compel, is_xl = _prepare_diffusers_pipelines(
+        device=device, sampler_name=args.sampler, use_canny=use_canny,
+    )
     img_paths = input_images if input_images is not None else [""] * len(prompts)
 
     for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path in zip(
@@ -241,7 +274,17 @@ def _generate_with_diffusers(
             common_kwargs["pooled_prompt_embeds"] = pooled_prompt
             common_kwargs["negative_pooled_prompt_embeds"] = neg_pooled_prompt
 
-        if active_image is not None:
+        if use_canny and active_image is not None:
+            image_array = np.array(active_image)
+            edges = cv2.Canny(image_array, 100, 200)
+            # Convert single-channel edge map to 3-channel RGB PIL Image
+            canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+            result = text2img(
+                image=canny_image,
+                controlnet_conditioning_scale=control_scale,
+                **common_kwargs,
+            )
+        elif active_image is not None:
             result = img2img(
                 image=active_image,
                 strength=args.strength,
@@ -333,6 +376,8 @@ def main() -> int:
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")
     parser.add_argument("--allow-cuda", action="store_true", help="Allow CUDA if available.")
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
+    parser.add_argument("--use-canny", action="store_true", help="Use Canny Edge ControlNet for generation.")
+    parser.add_argument("--control-scale", type=float, default=1.0, help="ControlNet conditioning scale (0.0–1.0).")
 
     args = parser.parse_args()
 
@@ -419,6 +464,8 @@ def main() -> int:
             timestamp=timestamp,
             input_image=input_image,
             input_images=init_images,
+            use_canny=args.use_canny,
+            control_scale=args.control_scale,
         )
     else:
         print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
