@@ -174,9 +174,12 @@ def save_report(
     lines.append(f"Macro Recall:    {mr:.4f}")
     lines.append(f"Macro F1:        {mf1:.4f}")
     lines.append("")
-    lines.append("Per-class metrics:")
+    lines.append("Per-class metrics (sorted by F1 desc):")
     lines.append(f"{'Idx':>3} {'Class':25s} {'Support':>7} {'Prec':>7} {'Rec':>7} {'F1':>7}")
-    for idx, (prec, rec, f1, sup) in enumerate(metrics["per_class"]):
+    sorted_per_class = sorted(
+        enumerate(metrics["per_class"]), key=lambda item: item[1][2], reverse=True
+    )
+    for idx, (prec, rec, f1, sup) in sorted_per_class:
         cname = class_names[idx] if idx < len(class_names) else f"class_{idx}"
         lines.append(f"{idx:3d} {cname:25s} {sup:7d} {prec:7.4f} {rec:7.4f} {f1:7.4f}")
 

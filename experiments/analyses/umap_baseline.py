@@ -47,11 +47,11 @@ os.environ.setdefault("PYTORCH_MPS_HIGH_WATERMARK_RATIO", "0.0")
 # ── Constants ─────────────────────────────────────────────────────────────
 TARGET_CLASSES: List[str] = [
     "person",
-    "book",
-    "toothbrush",
-    "backpack",
-    "parking meter",
-    "spoon",
+    # "book",
+    # "toothbrush",
+    # "backpack",
+    # "parking meter",
+    "scissors",
 ]
 
 IMAGENET_MEAN = [0.485, 0.456, 0.406]

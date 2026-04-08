@@ -9,38 +9,45 @@ from pathlib import Path
 # )
 
 from parts_simple import (
-    DEFINING_FEATURES, MATERIALS, CONTEXTS,
-    SHOT_TYPES, LIGHTING, FRAMING, QUALITY_TAGS, NEGATIVE_PROMPTS, _BASE_NEG
+    DEFINING_FEATURES,
+    MATERIALS,
+    CONTEXTS,
+    SHOT_TYPES,
+    LIGHTING,
+    FRAMING,
+    QUALITY_TAGS,
+    NEGATIVE_PROMPTS,
+    _BASE_NEG,
 )
 
-TARGET_CLASSES = ["toaster", "parking meter", "spoon", "backpack", "hair drier", "toothbrush", "laptop"]
-
-
-IMG2IMG_PROBABILITY: dict[str, float] = {
-    "toaster":       1.0,
-    "hair drier":    1.0,
-    "toothbrush":    1.0,
-    "backpack":      1.0,
-    "parking meter": 1.0,
-    "spoon":         1.0,
-    "laptop":        1.0,
+TARGET_CLASSES: dict[str, str] = {
+    "toaster": "<coco-toaster>",
+    "hair drier": "<coco-dryer>",
 }
 
+EMBEDDING_PATHS: dict[str, str] = {
+    "toaster": "data_generation_backend/embeddings/toaster/learned_embeds.safetensors",
+    "hair drier": "data_generation_backend/embeddings/dryer/learned_embeds.safetensors",
+}
 
-def build_prompt(cls: str) -> str:
-    feature  = random.choice(DEFINING_FEATURES.get(cls) or [cls])
+INCLUDE_SEGMENTATIONS = False
+INIT_IMG_PROBABILITY: dict[str, float] = {cls: 1.0 for cls in TARGET_CLASSES}
+
+
+def build_prompt(cls: str, placeholder: str) -> str:
+    feature = random.choice(DEFINING_FEATURES.get(cls) or [cls])
     material = random.choice(MATERIALS.get(cls) or [""])
-    context  = random.choice(CONTEXTS.get(cls) or [""])
-    shot     = random.choice(SHOT_TYPES)
+    context = random.choice(CONTEXTS.get(cls) or [""])
+    shot = random.choice(SHOT_TYPES)
     lighting = random.choice(LIGHTING)
-    framing  = random.choice(FRAMING)
-    quality  = random.choice(QUALITY_TAGS)
+    framing = random.choice(FRAMING)
+    quality = random.choice(QUALITY_TAGS)
 
     # bump weight for worn backpack contexts so object isn't lost to the person
     weight = 1.4 if (cls == "backpack" and "worn" in context) else 1.2
 
     parts = [
-        f"({cls}){weight}",
+        f"({placeholder}){weight}",
         feature,
         f"made of {material}" if material else "",
         context,
@@ -116,7 +123,7 @@ def pick_training_image(cls: str, coco_index: dict[str, list[tuple[str, list]]])
     return random.choice(candidates)
 
 
-def generate_and_save_class_jsons(classes: list[str], num_per_class: int = 100) -> None:
+def generate_and_save_class_jsons(classes: dict[str, str], num_per_class: int = 100) -> None:
     cwd = Path.cwd()
 
     annotations_path = Path("../../coco_dataset/contextual_crops/annotations/single_instances_train.json")
@@ -132,8 +139,8 @@ def generate_and_save_class_jsons(classes: list[str], num_per_class: int = 100) 
         coco_index = {}
         use_img2img = False
 
-    for cls in classes:
-        p_img2img = IMG2IMG_PROBABILITY.get(cls, 0.5)
+    for cls, placeholder in classes.items():
+        p_img2img = INIT_IMG_PROBABILITY.get(cls, 0.5)
 
         samples = []
         for _ in range(num_per_class):
@@ -141,16 +148,19 @@ def generate_and_save_class_jsons(classes: list[str], num_per_class: int = 100) 
             if use_img2img and random.random() < p_img2img:
                 init_image, segmentation = pick_training_image(cls, coco_index)
 
-            samples.append({
-                "prompt": build_prompt(cls),
-                "negative_prompt": NEGATIVE_PROMPTS.get(cls, _BASE_NEG),
-                "cfg_scale": 9.0,
-                "init_image": init_image,  # "" -> txt2img, path -> img2img
-                "segmentation": segmentation,
-            })
+            samples.append(
+                {
+                    "prompt": build_prompt(cls, placeholder),
+                    "negative_prompt": NEGATIVE_PROMPTS.get(cls, _BASE_NEG),
+                    "cfg_scale": 9.0,
+                    "init_image": init_image,  # "" -> txt2img, path -> img2img
+                    "segmentation": segmentation if INCLUDE_SEGMENTATIONS else [],
+                }
+            )
 
         final_data = {
             "coco_class": cls,
+            "embedding_path": EMBEDDING_PATHS.get(cls, ""),
             "samples": samples,
         }
 

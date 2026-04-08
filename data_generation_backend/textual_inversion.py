@@ -526,7 +526,12 @@ class TextualInversionDataset(Dataset):
         self.center_crop = center_crop
         self.flip_p = flip_p
 
-        self.image_paths = [os.path.join(self.data_root, file_path) for file_path in os.listdir(self.data_root)]
+        image_exts = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
+        self.image_paths = [
+            os.path.join(self.data_root, file_path)
+            for file_path in os.listdir(self.data_root)
+            if file_path.lower().endswith(image_exts)
+        ]
 
         self.num_images = len(self.image_paths)
         self._length = self.num_images
@@ -549,13 +554,19 @@ class TextualInversionDataset(Dataset):
 
     def __getitem__(self, i):
         example = {}
-        image = Image.open(self.image_paths[i % self.num_images])
+        img_path = self.image_paths[i % self.num_images]
+        image = Image.open(img_path)
 
         if not image.mode == "RGB":
             image = image.convert("RGB")
 
         placeholder_string = self.placeholder_token
-        text = random.choice(self.templates).format(placeholder_string)
+        text_path = os.path.splitext(img_path)[0] + ".txt"
+        if os.path.exists(text_path):
+            with open(text_path, "r") as f:
+                text = f.read().strip()
+        else:
+            text = random.choice(self.templates).format(placeholder_string)
 
         example["input_ids"] = self.tokenizer(
             text,
