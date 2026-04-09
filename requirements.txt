@@ -20,4 +20,5 @@ torchview
 graphviz
 compel
 umap-learn
+tensorboard
 scikit-learn>=1.6

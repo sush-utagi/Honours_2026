@@ -40,17 +40,18 @@ for class_dir in "$DATA_DIR"/*/; do
       --learnable_property="object" \
       --placeholder_token="$placeholder" \
       --initializer_token="$class_name" \
-      --num_vectors=3 \
+      --num_vectors=4 \
       --resolution=512 \
-      --mixed_precision="fp16" \
       --train_batch_size=1 \
       --gradient_accumulation_steps=4 \
-      --max_train_steps=800 \
-      --learning_rate=5.0e-04 \
-      --scale_lr \
+      --max_train_steps=1000 \
+      --learning_rate=1.0e-04 \
       --lr_scheduler="constant" \
       --lr_warmup_steps=0 \
-      --output_dir="$output_dir"
+      --output_dir="$output_dir" \
+      --validation_prompt="A photo of a $placeholder on a grey table" \
+      --validation_steps=200 \
+      --checkpointing_steps=500     
 
     echo "Completed $class_name. Results in $output_dir"
 done
