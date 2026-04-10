@@ -38,8 +38,6 @@ from torchview import draw_graph
 
 
 IMAGE_EXTENSIONS = (".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff")
-MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
-STD = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 def build_transform(image_size: int = 224, augment: bool = False) -> Callable[[Image.Image], torch.Tensor]:
@@ -56,8 +54,8 @@ def build_transform(image_size: int = 224, augment: bool = False) -> Callable[[I
         if augment and random.random() < 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
         arr = np.asarray(img).astype(np.float32) / 255.0
-        arr = (arr - MEAN) / STD
         tensor = torch.from_numpy(arr).permute(2, 0, 1)  # HWC -> CHW
+        tensor = tensor * 2.0 - 1.0  # normalize to [-1, 1]
         return tensor
 
     return _transform
@@ -546,7 +544,7 @@ def save_gradcam_overlay(
     """Overlay heatmap on the original image and save."""
 
     img = image.permute(1, 2, 0).cpu().numpy()
-    img = (img * STD + MEAN).clip(0, 1)
+    img = ((img + 1.0) * 0.5).clip(0, 1)  # [-1, 1] -> [0, 1]
     fig, ax = plt.subplots(figsize=(4, 4))
     ax.imshow(img)
     ax.imshow(heatmap, cmap="jet", alpha=alpha)
