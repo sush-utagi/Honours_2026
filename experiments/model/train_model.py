@@ -143,7 +143,12 @@ def main() -> None:
         except Exception:
             pass
 
-    run_name = "baseline_model_A" if args.model_type == "baseline" else "experimental_model_A"
+    if args.model_type == "baseline":
+        run_name = "baseline_model_A"
+    elif args.model_type == "baseline_B":
+        run_name = "baseline_model_B"
+    else:
+        run_name = "experimental_model_A"
     output_dir = PROJECT_ROOT / "runs" / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[run] model_type={args.model_type} run_dir={output_dir}")
