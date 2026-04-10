@@ -69,13 +69,14 @@ def _contextual_crop(
     pad_right = max(0, right - w)
     pad_bottom = max(0, bottom - h)
 
-    # Mean padding to avoid harsh borders.
-    pad_value = np.round(image.reshape(-1, image.shape[2]).mean(axis=0)).astype(image.dtype)
+    # Neutral padding (127, 127, 127) for COCO contextual crops.
+    # In the [-1, 1] normalization range, 127.5 is exactly zero.
+    pad_value = np.array([127, 127, 127], dtype=image.dtype)
     padded = np.empty(
         (h + pad_top + pad_bottom, w + pad_left + pad_right, image.shape[2]),
         dtype=image.dtype,
     )
-    padded[...] = pad_value
+    padded[:] = pad_value
     padded[pad_top : pad_top + h, pad_left : pad_left + w] = image
 
     # Shift crop window into padded coordinates.

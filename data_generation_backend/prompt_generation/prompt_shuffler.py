@@ -37,20 +37,18 @@ INIT_IMG_PROBABILITY: dict[str, float] = {cls: 1.0 for cls in TARGET_CLASSES}
 def build_prompt(cls: str, placeholder: str) -> str:
     feature = random.choice(DEFINING_FEATURES.get(cls) or [cls])
     material = random.choice(MATERIALS.get(cls) or [""])
-    context = random.choice(CONTEXTS.get(cls) or [""])
+    # context = random.choice(CONTEXTS.get(cls) or [""])
     shot = random.choice(SHOT_TYPES)
     lighting = random.choice(LIGHTING)
     framing = random.choice(FRAMING)
     quality = random.choice(QUALITY_TAGS)
 
-    # bump weight for worn backpack contexts so object isn't lost to the person
-    weight = 1.4 if (cls == "backpack" and "worn" in context) else 1.2
-
+    weight = 1.2
     parts = [
-        f"({placeholder}){weight}",
+        f"A photo of a ({placeholder}){weight}",
         feature,
         f"made of {material}" if material else "",
-        context,
+        # context,
         shot,
         lighting,
         framing,
@@ -152,7 +150,7 @@ def generate_and_save_class_jsons(classes: dict[str, str], num_per_class: int = 
                 {
                     "prompt": build_prompt(cls, placeholder),
                     "negative_prompt": NEGATIVE_PROMPTS.get(cls, _BASE_NEG),
-                    "cfg_scale": 9.0,
+                    "cfg_scale": round(random.uniform(8.8, 9.2), 1),
                     "init_image": init_image,  # "" -> txt2img, path -> img2img
                     "segmentation": segmentation if INCLUDE_SEGMENTATIONS else [],
                 }

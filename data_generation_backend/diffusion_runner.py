@@ -10,6 +10,7 @@ import os
 import sys
 import warnings
 from datetime import datetime
+from itertools import product
 from pathlib import Path
 
 import cv2
@@ -52,49 +53,74 @@ def _env_flag(var_name: str) -> bool:
     return val == 'true'
 
 
-def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int]]:
-    cfg_levels = [float(cfg) for cfg in range(5, 14)]  # 5…13
-    step_levels = list(range(10, 51, 5))  # 10,15,…,50
-
-    if args.sweep_cfg and args.sweep_num_steps:
-        grid = [(c, s) for c in cfg_levels for s in step_levels]  # cartesian grid
-        grid_size = len(grid)
-        if args.num_images < grid_size:
-            raise ValueError(
-                f"--sweep-cfg and --sweep-num-steps together require at least {grid_size} images to cover all cfg/step pairs once."
-            )
-        repeats = (args.num_images + grid_size - 1) // grid_size
-        schedule = (grid * repeats)[: args.num_images]
-        cfg_schedule = [c for c, _ in schedule]
-        steps_schedule = [s for _, s in schedule]
+def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], list[float], list[float]]:
+    cfg_levels = [args.cfg_scale]
+    if args.sweep_cfg:
         if args.no_cfg:
             raise ValueError("--sweep-cfg cannot be combined with --no-cfg.")
-    elif args.sweep_cfg:
-        sweep_steps = len(cfg_levels)
-        if args.num_images < sweep_steps:
-            raise ValueError(f"--sweep-cfg requires at least {sweep_steps} images to cover integer cfg 5–13 evenly.")
-        if args.no_cfg:
-            raise ValueError("--sweep-cfg cannot be combined with --no-cfg.")
-        repeats = (args.num_images + sweep_steps - 1) // sweep_steps
-        cfg_schedule = (cfg_levels * repeats)[: args.num_images]
-        steps_schedule = [args.steps] * args.num_images
-    elif args.sweep_num_steps:
-        step_count = len(step_levels)
-        if args.num_images < step_count:
-            raise ValueError(f"--sweep-num-steps requires at least {step_count} images to cover step counts 10–50.")
-        repeats_steps = (args.num_images + step_count - 1) // step_count
-        steps_schedule = (step_levels * repeats_steps)[: args.num_images]
-        cfg_schedule = [args.cfg_scale] * args.num_images
-    else:
-        cfg_schedule = [args.cfg_scale] * args.num_images
-        steps_schedule = [args.steps] * args.num_images
+        cfg_levels = [float(cfg) for cfg in range(5, 14)]  # 5…13
 
-    return cfg_schedule, steps_schedule
+    step_levels = [args.steps]
+    if args.sweep_num_steps:
+        step_levels = list(range(10, 51, 5))  # 10,15,…,50
+
+    strength_levels = [args.strength]
+    if args.sweep_strength:
+        # Typical useful range for img2img strength; keeps steps meaningful
+        strength_levels = [round(s, 1) for s in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]]
+
+    control_levels = [args.control_scale]
+    if args.sweep_control_scale:
+        if not (args.use_canny or args.use_segnet):
+            raise ValueError("--sweep-control-scale requires --use-canny or --use-segnet.")
+        control_levels = [round(s, 1) for s in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]]
+
+    sweep_dims = [cfg_levels, step_levels, strength_levels, control_levels]
+    sweep_counts = [len(dim) for dim in sweep_dims if len(dim) > 1]
+
+    # No sweeps: just repeat single values
+    if not sweep_counts:
+        cfg_schedule = cfg_levels * args.num_images
+        steps_schedule = step_levels * args.num_images
+        strength_schedule = strength_levels * args.num_images
+        control_schedule = control_levels * args.num_images
+        return cfg_schedule, steps_schedule, strength_schedule, control_schedule
+
+    grid = list(product(cfg_levels, step_levels, strength_levels, control_levels))
+    grid_size = len(grid)
+
+    if args.num_images < grid_size:
+        sweep_flags = []
+        if len(cfg_levels) > 1:
+            sweep_flags.append("--sweep-cfg")
+        if len(step_levels) > 1:
+            sweep_flags.append("--sweep-num-steps")
+        if len(strength_levels) > 1:
+            sweep_flags.append("--sweep-strength")
+        if len(control_levels) > 1:
+            sweep_flags.append("--sweep-control-scale")
+        joined = " and ".join(sweep_flags)
+        raise ValueError(f"{joined} together require at least {grid_size} images to cover all combinations once.")
+
+    repeats = (args.num_images + grid_size - 1) // grid_size
+    schedule = (grid * repeats)[: args.num_images]
+    cfg_schedule = [c for c, _, _, _ in schedule]
+    steps_schedule = [s for _, s, _, _ in schedule]
+    strength_schedule = [st for _, _, st, _ in schedule]
+    control_schedule = [cs for _, _, _, cs in schedule]
+
+    return cfg_schedule, steps_schedule, strength_schedule, control_schedule
 
 
 def _resolve_diffusers_scheduler(config, sampler_name: str):
     try:
-        from diffusers import DDPMScheduler, DDIMScheduler, DPMSolverMultistepScheduler
+        from diffusers import (
+            DDPMScheduler,
+            DDIMScheduler,
+            DPMSolverMultistepScheduler,
+            DPMSolverSDEScheduler,
+            EulerAncestralDiscreteScheduler,
+        )
     except ImportError as exc: 
         raise ImportError("The 'diffusers' package is required but not installed.") from exc
 
@@ -103,8 +129,12 @@ def _resolve_diffusers_scheduler(config, sampler_name: str):
         return DDPMScheduler.from_config(config)
     if name == "ddim":
         return DDIMScheduler.from_config(config)
-    if name in {"dpm", "dpmsolver", "dpm++", "dpmpp"}:
+    if name in {"euler-a"}:
+        return EulerAncestralDiscreteScheduler.from_config(config)
+    if name in {"dpm++"}:
         return DPMSolverMultistepScheduler.from_config(config)
+    if name in {"dpm++ sde"}: # only noise outputs for some reason
+        return DPMSolverSDEScheduler.from_config(config)
     return None
 
 
@@ -117,7 +147,13 @@ def _is_local_weights_file(path: str) -> bool:
     return path.endswith((".safetensors", ".ckpt"))
 
 
-def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool = False, use_segnet: bool = False):
+def _prepare_diffusers_pipelines(
+    device: str,
+    sampler_name: str,
+    use_canny: bool = False,
+    use_segnet: bool = False,
+    embeddings: list[str] | None = None,
+):
     try:
         from diffusers import (
             StableDiffusionPipeline,
@@ -168,6 +204,7 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool
         controlnet = ControlNetModel.from_pretrained(controlnet_model_id, torch_dtype=torch_dtype)
 
     load_method = "from_single_file (local)" if is_local else "from_pretrained"
+    print(f"[pipeline] sampler: {sampler_name}")
     print(f"[pipeline] loading {'SDXL' if is_xl else 'SD 1.x'} model: {model_id} ({load_method})")
 
     if (use_canny or use_segnet) and controlnet is not None:
@@ -194,6 +231,14 @@ def _prepare_diffusers_pipelines(device: str, sampler_name: str, use_canny: bool
             text2img = StableDiffusionXLPipeline.from_pretrained(model_id, **pipeline_kwargs)
         else:
             text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
+
+    # Load textual inversion embeddings (if any). We do this after pipeline init so weights are available.
+    for emb_path in embeddings or []:
+        try:
+            text2img.load_textual_inversion(emb_path)
+            print(f"[pipeline] loaded textual inversion embedding: {emb_path}")
+        except Exception as exc:  # pragma: no cover - defensive load
+            print(f"[pipeline] warning: failed to load embedding {emb_path}: {exc}")
 
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
@@ -247,6 +292,8 @@ def _generate_with_diffusers(
     negative_prompts: list[str],
     cfg_schedule: list[float],
     steps_schedule: list[int],
+    strength_schedule: list[float],
+    control_schedule: list[float],
     seeds: list[int],
     run_outdir: Path,
     timestamp: str,
@@ -256,15 +303,20 @@ def _generate_with_diffusers(
     use_canny: bool = False,
     use_segnet: bool = False,
     control_scale: float = 1.0,
+    embeddings: list[str] | None = None,
 ):
     text2img, img2img, compel, is_xl = _prepare_diffusers_pipelines(
-        device=device, sampler_name=args.sampler, use_canny=use_canny, use_segnet=use_segnet,
+        device=device,
+        sampler_name=args.sampler,
+        use_canny=use_canny,
+        use_segnet=use_segnet,
+        embeddings=embeddings,
     )
     img_paths = input_images if input_images is not None else [""] * len(prompts)
     segs = segmentations if segmentations is not None else [[]] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, seed, img_path, seg in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds, img_paths, segs
+    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed, img_path, seg in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, segs
     ):
         active_image = Image.open(img_path).convert("RGB") if img_path else input_image
 
@@ -320,7 +372,7 @@ def _generate_with_diffusers(
         elif active_image is not None:
             result = img2img(
                 image=active_image,
-                strength=args.strength,
+                strength=strength,
                 **common_kwargs,
             )
         else:
@@ -330,7 +382,9 @@ def _generate_with_diffusers(
         seed_suffix = f"seed{seed}"
         cfg_suffix = f"cfg{cfg_scale:.1f}"
         steps_suffix = f"steps{n_steps}"
-        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}.png"
+        strength_suffix = f"str{strength:.1f}"
+        control_suffix = f"cs{control_scale:.1f}"
+        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}.png"
         image.save(outpath)
         print(f"Wrote {outpath}")
 
@@ -342,10 +396,13 @@ def _generate_with_local_sd(
     negative_prompts: list[str],
     cfg_schedule: list[float],
     steps_schedule: list[int],
+    strength_schedule: list[float],
+    control_schedule: list[float],
     seeds: list[int],
     run_outdir: Path,
     timestamp: str,
     input_image: Image.Image | None,
+    input_images: list[str] | None = None,  # accepted for API parity; not used in local backend
 ):
     sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
     data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
@@ -364,14 +421,14 @@ def _generate_with_local_sd(
     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
     do_cfg = not args.no_cfg
 
-    for prompt, neg_prompt, cfg_scale, n_steps, seed in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, seeds
+    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds
     ):
         output_array = pipeline.generate(
             prompt=prompt,
             uncond_prompt=neg_prompt,
             input_image=input_image,
-            strength=args.strength,
+            strength=strength,
             do_cfg=do_cfg,
             cfg_scale=cfg_scale,
             sampler_name=args.sampler,
@@ -386,7 +443,9 @@ def _generate_with_local_sd(
         seed_suffix = f"seed{seed}"
         cfg_suffix = f"cfg{cfg_scale:.1f}"
         steps_suffix = f"steps{n_steps}"
-        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}.png"
+        strength_suffix = f"str{strength:.1f}"
+        control_suffix = f"cs{control_scale:.1f}"  # control_schedule not used in local backend; keep parity
+        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}.png"
         image.save(outpath)
         print(f"Wrote {outpath}")
 
@@ -395,23 +454,35 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
     parser.add_argument("--prompt", help="Text prompt (ignored when --from-json is used).", required=False)
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
-    parser.add_argument("--from-json",default=None,help="Path to a prompts JSON file; generates one image per sample in the file.",)
+    parser.add_argument(
+        "--from-json",
+        default=None,
+        help="Path to a prompts JSON file; generates one image per sample in the file.",
+    )
     parser.add_argument("--outdir", default=None, help="Output directory (default: data_generation_outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
     parser.add_argument("--seed",type=int,default=None,help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",)
-    parser.add_argument("--steps", type=int, default=25, help="Number of inference steps.")
-    parser.add_argument("--sampler", default="ddim", help="Sampler name: choose ddpm or ddim.")
-    parser.add_argument("--cfg-scale", type=float, default=8.0, help="Classifier-free guidance scale.")
+    parser.add_argument("--steps", type=int, default=30, help="Number of inference steps.")
+    parser.add_argument(
+        "--sampler",
+        default="euler-a",
+        help="Sampler name: ddpm, ddim, euler-a (ancestral, default), dpm++ sde, or dpmsolver variants.",
+    )
+    parser.add_argument("--cfg-scale", type=float, default=9.0, help="Classifier-free guidance scale.")
     parser.add_argument("--sweep-cfg",action="store_true",help="Sweep integer cfg scales 5–13 (inclusive) across images (requires at least 9 images; remainder is distributed unevenly).")
     parser.add_argument("--sweep-num-steps",action="store_true",help="Sweep inference steps 10–50 in increments of 5 across images (requires at least 9 images",)
+    parser.add_argument("--sweep-control-scale", action="store_true", help="Sweep ControlNet conditioning scale 0.1–1.0 in 0.1 steps (requires --use-canny or --use-segnet).")
+    parser.add_argument("--sweep-strength", action="store_true", help="Sweep img2img strength 0.1–0.9 in 0.1 increments across images.")
     parser.add_argument("--no-cfg", action="store_true", help="Disable classifier-free guidance.")
-    parser.add_argument("--strength", type=float, default=0.7, help="img2img strength (0-1). Ignored for txt2img.")
+    parser.add_argument("--strength", type=float, default=0.8, help="img2img strength (0-1). Ignored for txt2img.")
     parser.add_argument("--init-image", default=None, help="Optional path to an input image for img2img.")
     parser.add_argument("--allow-cuda", action="store_true", help="Allow CUDA if available.")
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
     parser.add_argument("--use-canny", action="store_true", help="Use Canny Edge ControlNet for generation.")
     parser.add_argument("--use-segnet", action="store_true", help="Use Segmentation ControlNet for generation.")
     parser.add_argument("--control-scale", type=float, default=1.0, help="ControlNet conditioning scale (0.0–1.0).")
+    parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",
+    )
 
     args = parser.parse_args()
 
@@ -427,9 +498,10 @@ def main() -> int:
     outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
 
     init_images: list[str] | None = None
+    json_embeddings: list[str] = []
 
     if args.from_json:
-        if args.sweep_cfg or args.sweep_num_steps:
+        if args.sweep_cfg or args.sweep_num_steps or args.sweep_strength or args.sweep_control_scale:
             raise ValueError("--from-json cannot be combined with sweep flags.")
         json_path = Path(args.from_json)
         if not json_path.exists():
@@ -438,16 +510,36 @@ def main() -> int:
             data = json.load(f)
         coco_class = data.get("coco_class")
         samples = data.get("samples")
+        embedding_path = data.get("embedding_path")
 
+        if not coco_class or not isinstance(coco_class, str):
+            raise ValueError("JSON must include string field 'coco_class'.")
+        if not isinstance(samples, list) or not samples:
+            raise ValueError("JSON must include non-empty list field 'samples'.")
 
-        if not coco_class or not isinstance(coco_class, str): raise ValueError("JSON must include string field 'coco_class'.")
-        if not isinstance(samples, list) or not samples: raise ValueError("JSON must include non-empty list field 'samples'.")
+        # Optional textual inversion embedding(s) supplied at top-level of JSON.
+        if embedding_path:
+            raw_paths = [embedding_path] if isinstance(embedding_path, str) else embedding_path
+            if not isinstance(raw_paths, list) or not all(isinstance(p, str) for p in raw_paths):
+                raise ValueError("JSON field 'embedding_path' must be a string or list of strings.")
+            for raw_path in raw_paths:
+                path_obj = Path(raw_path)
+                candidate_paths = [path_obj] if path_obj.is_absolute() else [repo_root / path_obj, json_path.parent / path_obj]
+                for candidate in candidate_paths:
+                    if candidate.exists():
+                        json_embeddings.append(str(candidate.resolve()))
+                        break
+                else:
+                    tried = ", ".join(str(c) for c in candidate_paths)
+                    raise FileNotFoundError(f"Embedding path not found for '{raw_path}'. Tried: {tried}")
 
 
         prompts: list[str] = []
         negative_prompts: list[str] = []
         cfg_schedule: list[float] = []
         steps_schedule: list[int] = []
+        strength_schedule: list[float] = []
+        control_schedule: list[float] = []
         init_images: list[str] = []
         segmentations: list[list[list[float]]] = []
 
@@ -461,6 +553,8 @@ def main() -> int:
             negative_prompts.append(sample.get("negative_prompt", args.negative_prompt))
             cfg_schedule.append(float(sample.get("cfg_scale", args.cfg_scale)))
             steps_schedule.append(int(sample.get("steps", args.steps)))
+            strength_schedule.append(float(sample.get("strength", args.strength)))
+            control_schedule.append(float(sample.get("control_scale", args.control_scale)))
             init_images.append(sample.get("init_image", ""))
             segmentations.append(sample.get("segmentation", []))
 
@@ -472,7 +566,7 @@ def main() -> int:
         if args.prompt is None:
             raise ValueError("--prompt is required when not using --from-json.")
         num_images = args.num_images
-        cfg_schedule, steps_schedule = _build_schedules(args)
+        cfg_schedule, steps_schedule, strength_schedule, control_schedule = _build_schedules(args)
         prompts = [args.prompt] * num_images
         negative_prompts = [args.negative_prompt] * num_images
         run_outdir = (outdir / timestamp) if num_images > 1 else outdir
@@ -485,6 +579,9 @@ def main() -> int:
 
 
 
+    # Combine embeddings from CLI and JSON (JSON first so run-specific embeddings load before global ones)
+    all_embeddings = json_embeddings + [str(p) for p in args.embeddings]
+
     if use_hg_diffusers:
         model_id = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip() or "runwayml/stable-diffusion-v1-5"
         print(f"USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend ({model_id}).")
@@ -495,6 +592,8 @@ def main() -> int:
             negative_prompts=negative_prompts,
             cfg_schedule=cfg_schedule,
             steps_schedule=steps_schedule,
+            strength_schedule=strength_schedule,
+            control_schedule=control_schedule,
             seeds=seeds,
             run_outdir=run_outdir,
             timestamp=timestamp,
@@ -504,6 +603,7 @@ def main() -> int:
             use_canny=args.use_canny,
             use_segnet=args.use_segnet,
             control_scale=args.control_scale,
+            embeddings=all_embeddings,
         )
     else:
         print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
@@ -515,6 +615,8 @@ def main() -> int:
             negative_prompts=negative_prompts,
             cfg_schedule=cfg_schedule,
             steps_schedule=steps_schedule,
+            strength_schedule=strength_schedule,
+            control_schedule=control_schedule,
             seeds=seeds,
             run_outdir=run_outdir,
             timestamp=timestamp,
