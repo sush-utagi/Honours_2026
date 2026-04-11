@@ -1,3 +1,7 @@
 [submodule "stable-diffusion"]
 	path = data_generation_backend/diffusion_model
 	url = https://github.com/sush-utagi/pytorch-stable-diffusion.git
+
+[submodule "thesis"]
+	path = thesis
+	url = https://git@git.overleaf.com/688c5ea74a172b407c2594cc
