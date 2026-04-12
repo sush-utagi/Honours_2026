@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
 
+import matplotlib.pyplot as plt
+import numpy as np
 import torch
 from PIL import Image
 from tqdm import tqdm
@@ -133,8 +135,11 @@ def compute_metrics(preds: Sequence[int], targets: Sequence[int], num_classes: i
     fn = [0] * num_classes
     support = [0] * num_classes
 
+    full_cm = [[0 for _ in range(num_classes)] for _ in range(num_classes)]
+
     for p, t in zip(preds, targets):
         support[t] += 1
+        full_cm[t][p] += 1
         if p == t:
             tp[t] += 1
         else:
@@ -152,11 +157,18 @@ def compute_metrics(preds: Sequence[int], targets: Sequence[int], num_classes: i
     macro_rec = sum(pc[1] for pc in per_class) / num_classes
     macro_f1 = sum(pc[2] for pc in per_class) / num_classes
 
+    confusion_matrices = []
+    for c in range(num_classes):
+        tn = total - (tp[c] + fp[c] + fn[c])
+        confusion_matrices.append((tn, fp[c], fn[c], tp[c]))
+
     return {
         "accuracy": accuracy,
         "per_class": per_class,
         "macro": (macro_prec, macro_rec, macro_f1),
         "support": total,
+        "confusion_matrices": confusion_matrices,
+        "full_cm": full_cm,
     }
 
 
@@ -198,8 +210,59 @@ def save_report(
     print(f"[report] saved to {out_path}")
 
 
+def plot_confusion_matrices(metrics: dict, class_names: Sequence[str], out_dir: Path) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+    
+    # full confusion matrix
+    full_cm = np.array(metrics["full_cm"])
+    fig, ax = plt.subplots(figsize=(10, 10))
+    cax = ax.matshow(full_cm, cmap=plt.cm.Blues)
+    fig.colorbar(cax)
+    
+    labels = [name if name in ["toaster", "hair drier"] else "" for name in class_names]
+    
+    ax.set_xticks(np.arange(len(class_names)))
+    ax.set_yticks(np.arange(len(class_names)))
+    ax.set_xticklabels(labels, rotation=90)
+    ax.set_yticklabels(labels)
+    
+    plt.xlabel('Predicted', fontsize=12)
+    plt.ylabel('Actual', fontsize=12)
+    plt.title('Full Confusion Matrix', fontsize=14, pad=20)
+    
+    file_path = out_dir / "full_confusion_matrix.png"
+    plt.savefig(file_path, bbox_inches='tight')
+    plt.close(fig)
+
+    # per-class confusion matrices ()s
+    matrices = metrics["confusion_matrices"]
+    for idx, (tn, fp, fn, tp) in enumerate(matrices):
+        cname = class_names[idx] if idx < len(class_names) else f"class_{idx}"
+        
+        fig, ax = plt.subplots(figsize=(4, 4))
+        cm = np.array([[tn, fp], [fn, tp]])
+        
+        ax.matshow(cm, cmap=plt.cm.Blues, alpha=0.7)
+        for i in range(cm.shape[0]):
+            for j in range(cm.shape[1]):
+                ax.text(x=j, y=i, s=cm[i, j], va='center', ha='center', size='xx-large')
+        
+        ax.set_xticks([0, 1])
+        ax.set_yticks([0, 1])
+        ax.set_xticklabels(['Negative', 'Positive'])
+        ax.set_yticklabels(['Negative', 'Positive'])
+        plt.xlabel('Predicted', fontsize=12)
+        plt.ylabel('Actual', fontsize=12)
+        plt.title(f'Confusion Matrix: {cname}', fontsize=14, pad=20)
+        
+        file_path = out_dir / f"{cname}.png"
+        plt.savefig(file_path, bbox_inches='tight')
+        plt.close(fig)
+    print(f"[report] per-class and full confusion matrices saved to {out_dir}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Evaluate baseline or experimental classifier on full validation set.")
+    parser = argparse.ArgumentParser(description="Evaluate baseline or experimental classifier on full evaluation set.")
     parser.add_argument(
         "--model-type",
         choices=["baseline", "experimental"],
@@ -212,19 +275,30 @@ def main() -> None:
         help="Path to checkpoint (e.g., runs/baseline_model_A/checkpoints/best.pt or runs/experimental_model_A/checkpoints/best.pt)",
     )
     parser.add_argument(
-        "--val-dir",
-        default=str(DEFAULT_VAL_DIR),
-        help="Validation images directory.",
+        "--split",
+        choices=["val", "test"],
+        default="val",
+        help="Which dataset split to evaluate on (default: val).",
     )
     parser.add_argument(
-        "--val-ann",
-        default=str(DEFAULT_VAL_ANN),
-        help="COCO annotations file matching --val-dir.",
+        "--data-dir",
+        default=None,
+        help="Images directory (defaults to coco_dataset/contextual_crops/images/<split>).",
+    )
+    parser.add_argument(
+        "--ann-file",
+        default=None,
+        help="COCO annotations file (defaults to coco_dataset/contextual_crops/annotations/single_instances_<split>.json).",
     )
     parser.add_argument(
         "--results-dir",
         default=str(DEFAULT_RESULTS_DIR),
         help="Directory to store the text report (default: results).",
+    )
+    parser.add_argument(
+        "--plot-confusion",
+        action="store_true",
+        help="Generate and save per-class 2x2 confusion matrices.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed (reserved for future use).")
     parser.add_argument(
@@ -243,15 +317,16 @@ def main() -> None:
         raise FileNotFoundError(f"Checkpoint not found: {ckpt_path}")
     print(f"[run] model_type={args.model_type} ckpt={ckpt_path}")
 
-    val_dir = resolve_project_path(args.val_dir)
-    val_ann = resolve_project_path(args.val_ann)
-    if not val_dir.exists():
-        raise FileNotFoundError(f"Validation directory not found: {val_dir}")
-    if not val_ann.exists():
-        raise FileNotFoundError(f"Validation annotations not found: {val_ann}")
+    data_dir = resolve_project_path(args.data_dir) if args.data_dir else PROJECT_ROOT / f"coco_dataset/contextual_crops/images/{args.split}"
+    ann_file = resolve_project_path(args.ann_file) if args.ann_file else PROJECT_ROOT / f"coco_dataset/contextual_crops/annotations/single_instances_{args.split}.json"
+    
+    if not data_dir.exists():
+        raise FileNotFoundError(f"Images directory not found: {data_dir}")
+    if not ann_file.exists():
+        raise FileNotFoundError(f"Annotations file not found: {ann_file}")
 
     class_names = load_class_names()
-    val_labels = load_val_labels(val_ann)
+    val_labels = load_val_labels(ann_file)
 
     model = load_model(ckpt_path, device)
 
@@ -261,9 +336,9 @@ def main() -> None:
     # Track worst mistakes per class (up to 3 examples with highest wrong prob).
     worst: Dict[int, List[Tuple[str, str, float]]] = defaultdict(list)
 
-    image_paths = [p for p in val_dir.rglob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}]
+    image_paths = [p for p in data_dir.rglob("*") if p.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}]
     if not image_paths:
-        raise RuntimeError(f"No images found under {val_dir}")
+        raise RuntimeError(f"No images found under {data_dir}")
 
     batch_tensors: List[torch.Tensor] = []
     batch_targets: List[int] = []
@@ -320,6 +395,10 @@ def main() -> None:
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     out_path = resolve_project_path(args.results_dir) / f"{timestamp}_{args.model_type}_report.txt"
     save_report(out_path, class_names, metrics, worst)
+
+    if args.plot_confusion:
+        cm_out_dir = resolve_project_path(args.results_dir) / f"{timestamp}_{args.model_type}_{args.split}_cm"
+        plot_confusion_matrices(metrics, class_names, cm_out_dir)
 
 
 if __name__ == "__main__":  

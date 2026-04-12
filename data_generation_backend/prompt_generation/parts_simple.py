@@ -60,6 +60,8 @@ CONTEXTS = {
         "metal workbench",
         "wooden surface",
         "salon station",
+        "held by a hand",
+        "in a salon setting",
         ""
     ]
 }

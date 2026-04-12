@@ -37,7 +37,7 @@ INIT_IMG_PROBABILITY: dict[str, float] = {cls: 1.0 for cls in TARGET_CLASSES}
 def build_prompt(cls: str, placeholder: str) -> str:
     feature = random.choice(DEFINING_FEATURES.get(cls) or [cls])
     material = random.choice(MATERIALS.get(cls) or [""])
-    # context = random.choice(CONTEXTS.get(cls) or [""])
+    context = random.choice(CONTEXTS.get(cls) or [""])
     shot = random.choice(SHOT_TYPES)
     lighting = random.choice(LIGHTING)
     framing = random.choice(FRAMING)
@@ -48,7 +48,7 @@ def build_prompt(cls: str, placeholder: str) -> str:
         f"A photo of a ({placeholder}){weight}",
         feature,
         f"made of {material}" if material else "",
-        # context,
+        context,
         shot,
         lighting,
         framing,
