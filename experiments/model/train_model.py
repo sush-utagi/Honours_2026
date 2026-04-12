@@ -18,7 +18,7 @@ import argparse
 import os
 import sys
 from pathlib import Path
-from typing import List, Sequence
+from typing import List, Sequence 
 
 import matplotlib.pyplot as plt
 
@@ -113,7 +113,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Train (baseline or experimental) ResNet18 classifier.")
     parser.add_argument(
         "--model-type",
-        choices=["baseline", "experimental"],
+        choices=["baseline", "baseline_B", "experimental"],
         default="baseline",
         help="Model variant; controls run/log directories (default: baseline).",
     )

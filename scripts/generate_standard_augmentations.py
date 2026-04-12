@@ -54,14 +54,11 @@ def main() -> None:
                     class_to_images[name].append(img_lookup[img_id])
                 break
 
-    # Define standard augmentation pipeline
-    # Apply ColorJitter BEFORE rotation to ensure the padded areas (fill) stay clean.
-    # Increased rotation to 45 degrees and use 127 for neutral padding.
     augment = T.Compose([
-        T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
-        T.RandomHorizontalFlip(p=0.5),
-        T.RandomVerticalFlip(p=0.5),
-        T.RandomRotation(degrees=45, fill=(127, 127, 127)),
+        # T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+        T.RandomHorizontalFlip(p=0.6),
+        # T.RandomVerticalFlip(p=0.5),
+        T.RandomAffine(degrees=45, scale=(0.8, 1.2), fill=(127, 127, 127)),
     ])
 
     total_generated = 0

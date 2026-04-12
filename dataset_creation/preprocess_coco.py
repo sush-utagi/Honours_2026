@@ -444,7 +444,7 @@ def _repartition_train_val(
     }
     test_seg_json = {
         "info": {"description": "Contextual crops segmentations (test)", "version": "1.0"},
-        "licenses": licenses,
+        "licenses": licenses, 
         "categories": categories,
         "images": test_images,
         "annotations": test_segmentations,

@@ -75,8 +75,6 @@ def ingest_class_dir(
         # Destination filename to avoid clashes
         dest_name = f"{class_name}_syn_{next_img_id}{src.suffix.lower()}"
         dest_path = dest_dir / dest_name
-
-        # Copy image
         shutil.copy2(src, dest_path)
 
         # Append image record
