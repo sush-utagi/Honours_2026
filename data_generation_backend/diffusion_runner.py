@@ -39,6 +39,42 @@ def polygon_to_mask(segmentation: list[list[float]], image_height: int = 512, im
     return mask.convert('RGB')
 
 
+def is_padded(
+    image: Image.Image,
+    padding_value: int = 127,
+    tolerance: int = 2
+) -> bool:
+    arr = np.array(image.convert("RGB"))
+    corners = [
+        arr[0, 0],    # top-left
+        arr[0, -1],   # top-right
+        arr[-1, 0],   # bottom-left
+        arr[-1, -1],  # bottom-right
+    ]
+    return any(
+        all(abs(int(channel) - padding_value) < tolerance for channel in corner)
+        for corner in corners
+    )
+
+
+def apply_padding_mask(
+    synthetic_image: Image.Image,
+    source_image: Image.Image,
+    padding_value: int = 127,
+    tolerance: int = 2
+) -> Image.Image:
+    source_array = np.array(source_image.convert("RGB"))
+    synthetic_array = np.array(synthetic_image.convert("RGB"))
+    padding_mask = np.all(
+        np.abs(source_array.astype(int) - padding_value) < tolerance,
+        axis=-1  # shape: (H, W)
+    )
+    result = synthetic_array.copy()
+    result[padding_mask] = [padding_value, padding_value, padding_value]
+
+    return Image.fromarray(result)
+
+
 def _select_device(allow_cuda: bool, allow_mps: bool) -> str:
     device = "cpu"
     if torch.cuda.is_available() and allow_cuda:
@@ -379,6 +415,9 @@ def _generate_with_diffusers(
             result = text2img(**common_kwargs)
 
         image = result.images[0]
+        if active_image is not None and is_padded(active_image):
+            image = apply_padding_mask(image, active_image)
+
         seed_suffix = f"seed{seed}"
         cfg_suffix = f"cfg{cfg_scale:.1f}"
         steps_suffix = f"steps{n_steps}"
