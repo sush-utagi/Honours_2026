@@ -145,17 +145,20 @@ def main() -> None:
 
     if args.model_type == "baseline":
         run_name = "baseline_model_A"
+        log_name = "log_baseline_A.txt"
     elif args.model_type == "baseline_B":
         run_name = "baseline_model_B"
+        log_name = "log_baseline_B.txt"
     else:
         run_name = "experimental_model_A"
+        log_name = "log_experimental_A.txt"
     output_dir = PROJECT_ROOT / "runs" / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[run] model_type={args.model_type} run_dir={output_dir}")
 
     logs_dir = PROJECT_ROOT / "logs"
     logs_dir.mkdir(exist_ok=True)
-    log_path = logs_dir / f"log_{args.model_type}.txt"
+    log_path = logs_dir / log_name
 
     assembler = HybridDatasetAssembler(
         contextual_root=str(PROJECT_ROOT / "coco_dataset" / "contextual_crops")
