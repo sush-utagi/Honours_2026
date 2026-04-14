@@ -76,12 +76,7 @@ def apply_padding_mask(
 
 
 def _select_device(allow_cuda: bool, allow_mps: bool) -> str:
-    device = "cpu"
-    if torch.cuda.is_available() and allow_cuda:
-        device = "cuda"
-    elif (torch.backends.mps.is_built() or torch.backends.mps.is_available()) and allow_mps:
-        device = "mps"
-    return device
+    return os.getenv("DEVICE", "cpu")
 
 
 def _env_flag(var_name: str) -> bool:
@@ -335,6 +330,7 @@ def _generate_with_diffusers(
     timestamp: str,
     input_image: Image.Image | None,
     input_images: list[str] | None = None,
+    controlnet_images: list[str] | None = None,
     segmentations: list[list[list[float]]] | None = None,
     use_canny: bool = False,
     use_segnet: bool = False,
@@ -349,12 +345,17 @@ def _generate_with_diffusers(
         embeddings=embeddings,
     )
     img_paths = input_images if input_images is not None else [""] * len(prompts)
+    cn_paths = controlnet_images if controlnet_images is not None else [""] * len(prompts)
     segs = segmentations if segmentations is not None else [[]] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed, img_path, seg in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, segs
+    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed, img_path, cn_path, seg in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, cn_paths, segs
     ):
-        active_image = Image.open(img_path).convert("RGB") if img_path else input_image
+        active_image = None if args.force_txt2img else (
+            Image.open(img_path).convert("RGB") if img_path else input_image
+        )
+        # ControlNet conditioning image (from controlnet_image JSON field)
+        cn_image = Image.open(cn_path).convert("RGB") if cn_path else None
 
         generator_device = device if device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
@@ -395,10 +396,20 @@ def _generate_with_diffusers(
                 controlnet_conditioning_scale=control_scale,
                 **common_kwargs,
             )
+        elif use_canny and cn_image is not None:
+            # Use the dedicated controlnet_image as the canny source
+            image_array = np.array(cn_image)
+            edges = cv2.Canny(image_array, 100, 200)
+            canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+            result = text2img(
+                image=canny_image,
+                controlnet_conditioning_scale=control_scale,
+                **common_kwargs,
+            )
         elif use_canny and active_image is not None:
+            # Fallback: use init_image as canny source (legacy / CLI mode)
             image_array = np.array(active_image)
             edges = cv2.Canny(image_array, 100, 200)
-            # Convert single-channel edge map to 3-channel RGB PIL Image
             canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
             result = text2img(
                 image=canny_image,
@@ -522,6 +533,9 @@ def main() -> int:
     parser.add_argument("--control-scale", type=float, default=1.0, help="ControlNet conditioning scale (0.0–1.0).")
     parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",
     )
+    parser.add_argument("--force-txt2img", action="store_true",
+        help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",
+    )
 
     args = parser.parse_args()
 
@@ -550,14 +564,21 @@ def main() -> int:
         coco_class = data.get("coco_class")
         samples = data.get("samples")
         embedding_path = data.get("embedding_path")
+        generation_mode = data.get("generation_mode", "ti")
 
         if not coco_class or not isinstance(coco_class, str):
             raise ValueError("JSON must include string field 'coco_class'.")
         if not isinstance(samples, list) or not samples:
             raise ValueError("JSON must include non-empty list field 'samples'.")
 
+        # Auto-enable canny ControlNet if the JSON declares controlnet mode
+        if generation_mode == "controlnet":
+            print(f"[pipeline] JSON generation_mode='controlnet' — auto-enabling Canny ControlNet.")
+            args.use_canny = True
+
         # Optional textual inversion embedding(s) supplied at top-level of JSON.
-        if embedding_path:
+        # Skip embedding loading for controlnet mode (uses plain words, no TI).
+        if embedding_path and generation_mode != "controlnet":
             raw_paths = [embedding_path] if isinstance(embedding_path, str) else embedding_path
             if not isinstance(raw_paths, list) or not all(isinstance(p, str) for p in raw_paths):
                 raise ValueError("JSON field 'embedding_path' must be a string or list of strings.")
@@ -580,6 +601,7 @@ def main() -> int:
         strength_schedule: list[float] = []
         control_schedule: list[float] = []
         init_images: list[str] = []
+        controlnet_images: list[str] = []
         segmentations: list[list[list[float]]] = []
 
         for idx, sample in enumerate(samples):
@@ -595,6 +617,7 @@ def main() -> int:
             strength_schedule.append(float(sample.get("strength", args.strength)))
             control_schedule.append(float(sample.get("control_scale", args.control_scale)))
             init_images.append(sample.get("init_image", ""))
+            controlnet_images.append(sample.get("controlnet_image", ""))
             segmentations.append(sample.get("segmentation", []))
 
         num_images = len(prompts)
@@ -638,6 +661,7 @@ def main() -> int:
             timestamp=timestamp,
             input_image=input_image,
             input_images=init_images,
+            controlnet_images=controlnet_images if args.from_json else None,
             segmentations=segmentations if args.from_json else None,
             use_canny=args.use_canny,
             use_segnet=args.use_segnet,
