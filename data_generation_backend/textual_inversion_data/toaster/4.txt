@@ -1,1 +1,1 @@
-a very pixelated image of a white <coco-toaster>, low res.
+A white two-slot <coco-toaster> on a plain white surface.

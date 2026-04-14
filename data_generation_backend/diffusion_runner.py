@@ -606,10 +606,11 @@ def main() -> int:
         if not isinstance(samples, list) or not samples:
             raise ValueError("JSON must include non-empty list field 'samples'.")
 
-        # Auto-enable canny ControlNet if the JSON declares controlnet mode
         if generation_mode == "controlnet":
-            print(f"[pipeline] JSON generation_mode='controlnet' — auto-enabling Canny ControlNet.")
+            print(f"[pipeline] JSON generation_mode='controlnet' — using Canny ControlNet.")
             args.use_canny = True
+        elif generation_mode == "ti":
+            print(f"[pipeline] JSON generation_mode='ti' — using Textual Inversion.")
 
         # Optional textual inversion embedding(s) supplied at top-level of JSON.
         # Skip embedding loading for controlnet mode (uses plain words, no TI).

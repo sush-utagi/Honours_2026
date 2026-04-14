@@ -1,15 +1,7 @@
 #!/usr/bin/env python3
-"""Convert textual inversion tokens in prompt JSONs to plain words.
 
-Reads a prompt JSON file, replaces all TI placeholder tokens with their
-plain-English equivalents, and writes the result to a new file.
 
-Usage::
-
-    python convert_prompts.py toaster_ti_prompts.json
-    python convert_prompts.py hair_drier_ti_prompts.json
-
-Produces ``toaster_ti_prompts_plain.json``, etc.
+"""converts from textual inversion prompts to controlnet prompts
 """
 
 import argparse
@@ -30,9 +22,9 @@ def convert(input_path: Path) -> Path:
         raw = raw.replace(token, replacement)
 
     data = json.loads(raw)
-    data["generation_mode"] = "ti"
+    data["generation_mode"] = "controlnet"
 
-    out_path = input_path.with_name(input_path.stem + "_plain" + input_path.suffix)
+    out_path = input_path.with_name(input_path.stem + "_controlnet" + input_path.suffix)
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
