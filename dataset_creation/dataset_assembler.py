@@ -88,7 +88,7 @@ class HybridDatasetAssembler:
             synthetic_dir_name: subfolder under data-generation-outputs/diffusion containing synthetic images.
                                 If None/empty, no synthetic data is injected.
             target_class_name: COCO category name to assign to synthetic images.
-                               Required when synthetic_dir_name is provided.
+                                Required when synthetic_dir_name is provided.
             load_test: when False, skip loading the test split entirely (useful to keep test untouched).
         """
 
@@ -97,9 +97,7 @@ class HybridDatasetAssembler:
             splits["test"] = []
 
         # Build category mapping from train annotations (authoritative)
-        train_instances, _ = self._paths_for_split("train")
-        coco_train = COCO(str(train_instances))
-        self._build_category_mapping(coco_train)
+        self._ensure_category_mapping()
 
         # Load real COCO data for each split
         for split in ["train", "val"] + (["test"] if load_test else []):
@@ -134,7 +132,102 @@ class HybridDatasetAssembler:
         self._log_distribution(datasets, synthetic_label=target_class_name if synthetic_dir_name else None)
         return datasets
 
-    # ---------------------------------------------------------------- utilities
+
+    def get_image_paths_by_class(
+        self,
+        split: str, # 'train', 'val', 'test'
+        target_classes: Optional[Sequence[str]] = None, # only collect paths for these class names
+        max_samples: Optional[int] = None,
+    ) -> Dict[str, List[Path]]:
+        """
+        Group image paths by their primary category for a given split.
+            
+        Returns:
+            Dict mapping class name -> list of absolute Paths to images.
+        """
+        self._ensure_category_mapping()
+        
+        try:
+            instances_path, images_dir = self._paths_for_split(split)
+        except FileNotFoundError:
+            return {}
+
+        coco = COCO(str(instances_path))
+        
+        target_indices = None
+        if target_classes is not None:
+            target_indices = set()
+            for cls_name in target_classes:
+                try:
+                    idx = self._target_label_index(cls_name)
+                    target_indices.add(idx)
+                except ValueError:
+                    pass
+
+        paths_by_class: Dict[int, List[Path]] = {}
+        for img_id, img_info in coco.imgs.items():
+            path = images_dir / img_info["file_name"]
+            if not path.exists():
+                continue
+
+            ann_ids = coco.getAnnIds(imgIds=[img_id])
+            anns = coco.loadAnns(ann_ids)
+            if not anns:
+                continue
+
+            primary_cat = self._primary_category(anns)
+            label_idx = self.cat_id_to_idx.get(primary_cat)
+            if label_idx is None:
+                continue
+                
+            if target_indices is not None and label_idx not in target_indices:
+                continue
+                
+            paths_by_class.setdefault(label_idx, []).append(path)
+
+        result: Dict[str, List[Path]] = {}
+        for idx, paths in paths_by_class.items():
+            class_name = self.idx_to_name[idx]
+            if max_samples is not None and len(paths) > max_samples:
+                rng = random.Random(self.seed)
+                paths = rng.sample(paths, max_samples)
+            result[class_name] = sorted(paths)
+            
+        return result
+
+    def get_image_to_label_mapping(self, split: str) -> Dict[str, int]:
+        """
+        Returns mapping of image file name to the primary class ID 
+        (contiguous label index) for the given split.
+        """
+        self._ensure_category_mapping()
+        
+        try:
+            instances_path, _ = self._paths_for_split(split)
+        except FileNotFoundError:
+            return {}
+
+        coco = COCO(str(instances_path))
+        mapping: Dict[str, int] = {}
+        for img_id, img_info in coco.imgs.items():
+            ann_ids = coco.getAnnIds(imgIds=[img_id])
+            anns = coco.loadAnns(ann_ids)
+            if not anns:
+                continue
+            primary_cat = self._primary_category(anns)
+            label_idx = self.cat_id_to_idx.get(primary_cat)
+            if label_idx is not None:
+                mapping[img_info["file_name"]] = label_idx
+                
+        return mapping
+
+    def _ensure_category_mapping(self) -> None:
+        """Ensures that the category mappings (name to id and vice versa) are loaded."""
+        if not self.idx_to_name:
+            train_instances, _ = self._paths_for_split("train")
+            coco_train = COCO(str(train_instances))
+            self._build_category_mapping(coco_train)
+
     def _build_category_mapping(self, coco: COCO) -> None:
         cats = coco.loadCats(coco.getCatIds())
         cats_sorted = sorted(cats, key=lambda c: c["id"])

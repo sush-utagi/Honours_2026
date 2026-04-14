@@ -108,83 +108,37 @@ def load_model(ckpt_path: Path, device: torch.device) -> torch.nn.Module:
 # Annotation-driven image collection
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _load_annotation(ann_path: Path) -> dict:
-    with open(ann_path, "r", encoding="utf-8") as f:
-        return json.load(f)
 
 
-def _build_cat_name_to_id(categories: List[dict]) -> Dict[str, int]:
-    """Map COCO category *name* → category *id* (not contiguous index)."""
-    return {c["name"]: c["id"] for c in categories}
-
-
-def collect_images_from_annotation(
-    ann_path: Path,
-    images_dir: Path,
+def collect_images_for_split(
+    contextual_root: Path,
+    split: str,
     target_classes: List[str],
     n_per_class: int,
     seed: int,
 ) -> List[Tuple[Path, str]]:
-    """Return up to *n_per_class* (path, class_name) pairs per target class.
-
-    Uses the COCO-style annotation JSON to resolve which images belong to which
-    category (largest-area annotation = primary class).
-    """
-    data = _load_annotation(ann_path)
-    categories = data.get("categories", [])
-    cat_name_to_id = _build_cat_name_to_id(categories)
-
-    # Validate requested classes exist in annotation
-    target_cat_ids = {}
-    for name in target_classes:
-        cid = cat_name_to_id.get(name)
-        if cid is None:
-            print(f"[warn] class '{name}' not found in {ann_path.name} — skipping")
-            continue
-        target_cat_ids[cid] = name
-
-    # Map image_id → image info
-    img_map: Dict[int, dict] = {img["id"]: img for img in data.get("images", [])}
-
-    # Group annotations by category → collect image paths
-    # Use primary (largest-area) annotation per image
-    img_primary: Dict[int, Tuple[int, float]] = {}  # image_id → (cat_id, area)
-    for ann in data.get("annotations", []):
-        img_id = ann["image_id"]
-        cat_id = ann["category_id"]
-        area = ann.get("area", 0.0)
-        if img_id not in img_primary or area > img_primary[img_id][1]:
-            img_primary[img_id] = (cat_id, area)
-
-    # Bucket by target category
-    buckets: Dict[str, List[Path]] = {name: [] for name in target_classes if name in cat_name_to_id}
-    for img_id, (cat_id, _) in img_primary.items():
-        if cat_id not in target_cat_ids:
-            continue
-        img_info = img_map.get(img_id)
-        if img_info is None:
-            continue
-        fpath = images_dir / img_info["file_name"]
-        if fpath.exists():
-            class_name = target_cat_ids[cat_id]
-            buckets[class_name].append(fpath)
-
-    # Sample exactly n_per_class per bucket
-    rng = random.Random(seed)
+    """Return up to *n_per_class* (path, class_name) pairs per target class from the specified split."""
+    import sys
+    ROOT = Path(__file__).resolve().parents[2]
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
+    from dataset_creation.dataset_assembler import HybridDatasetAssembler
+    
+    assembler = HybridDatasetAssembler(contextual_root=str(contextual_root), seed=seed)
+    paths_by_class = assembler.get_image_paths_by_class(
+        split=split,
+        target_classes=target_classes,
+        max_samples=n_per_class,
+    )
+    
     result: List[Tuple[Path, str]] = []
     for class_name in target_classes:
-        paths = buckets.get(class_name, [])
+        paths = paths_by_class.get(class_name, [])
         if len(paths) == 0:
-            print(f"[warn] no images found for class '{class_name}'")
-            continue
-        rng.shuffle(paths)
-        selected = paths[: min(n_per_class, len(paths))]
-        if len(selected) < n_per_class:
-            print(
-                f"[warn] only {len(selected)} images available for '{class_name}' "
-                f"(requested {n_per_class})"
-            )
-        for p in selected:
+            print(f"[warn] no images found for class '{class_name}' in split '{split}'")
+        elif len(paths) < n_per_class:
+            print(f"[warn] only {len(paths)} images available for '{class_name}' in split '{split}' (requested {n_per_class})")
+        for p in paths:
             result.append((p, class_name))
 
     return result
@@ -448,15 +402,17 @@ def main() -> None:
     extractor = GAPFeatureExtractor(model)
 
     # ── Collect images ────────────────────────────────────────────────────
+    contextual_root = ROOT / "coco_dataset" / "contextual_crops"
+    
     print(f"\n[data] collecting {args.n_per_class} images/class from TRAIN …")
-    train_items = collect_images_from_annotation(
-        train_ann, train_img_dir, TARGET_CLASSES, args.n_per_class, args.seed,
+    train_items = collect_images_for_split(
+        contextual_root, "train", TARGET_CLASSES, args.n_per_class, args.seed,
     )
     print(f"[data] collected {len(train_items)} train images")
 
     print(f"[data] collecting {args.n_per_class} images/class from TEST …")
-    test_items = collect_images_from_annotation(
-        test_ann, test_img_dir, TARGET_CLASSES, args.n_per_class, args.seed + 1,
+    test_items = collect_images_for_split(
+        contextual_root, "test", TARGET_CLASSES, args.n_per_class, args.seed + 1,
     )
     print(f"[data] collected {len(test_items)} test images")
 

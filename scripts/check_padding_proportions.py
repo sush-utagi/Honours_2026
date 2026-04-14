@@ -89,7 +89,7 @@ def main() -> None:
             continue
         
         padded_count = 0
-        valid_file_names = []
+        valid_file_names = [] 
         
         # Filter to ensure files exist on disk
         for fname in file_names:

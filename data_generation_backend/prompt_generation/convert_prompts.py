@@ -16,7 +16,6 @@ import argparse
 import json
 from pathlib import Path
 
-# Mapping of TI placeholder tokens → plain words.
 TOKEN_MAP: dict[str, str] = {
     "<coco-toaster>": "toaster",
     "<coco-dryer>": "hair dryer",
@@ -30,12 +29,13 @@ def convert(input_path: Path) -> Path:
     for token, replacement in TOKEN_MAP.items():
         raw = raw.replace(token, replacement)
 
+    data = json.loads(raw)
+    data["generation_mode"] = "ti"
+
     out_path = input_path.with_name(input_path.stem + "_plain" + input_path.suffix)
     with out_path.open("w", encoding="utf-8") as f:
-        f.write(raw)
+        json.dump(data, f, indent=4)
 
-    # Quick sanity check: count samples
-    data = json.loads(raw)
     n = len(data.get("samples", []))
     print(f"[done] {input_path.name} → {out_path.name}  ({n} samples converted)")
     return out_path

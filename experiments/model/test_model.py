@@ -76,38 +76,12 @@ def load_class_names() -> List[str]:
     return assembler.idx_to_name
 
 
-def load_val_labels(val_ann_path: Path) -> Dict[str, int]:
-    """Map image file_name -> label_idx using largest-area annotation."""
-
-    from pycocotools.coco import COCO
-
-    coco = COCO(str(val_ann_path))
-
-    # category id -> contiguous idx (sorted by cat id)
-    cats_sorted = sorted(coco.loadCats(coco.getCatIds()), key=lambda c: c["id"])
-    cat_id_to_idx = {c["id"]: i for i, c in enumerate(cats_sorted)}
-
-    def primary_category(anns: List[dict]) -> int:
-        def area(a: dict) -> float:
-            if "area" in a:
-                return float(a["area"])
-            bbox = a.get("bbox", [0, 0, 0, 0])
-            return float(bbox[2] * bbox[3])
-
-        return max(anns, key=area)["category_id"]
-
-    mapping: Dict[str, int] = {}
-    for img_id, img_info in coco.imgs.items():
-        file_name = img_info["file_name"]
-        ann_ids = coco.getAnnIds(imgIds=[img_id])
-        anns = coco.loadAnns(ann_ids)
-        if not anns:
-            continue
-        cat_id = primary_category(anns)
-        label_idx = cat_id_to_idx.get(cat_id)
-        if label_idx is not None:
-            mapping[file_name] = label_idx
-    return mapping
+def load_val_labels(split: str) -> Dict[str, int]:
+    """Map image file_name -> label_idx using dataset assembler."""
+    from dataset_creation.dataset_assembler import HybridDatasetAssembler
+    
+    assembler = HybridDatasetAssembler(contextual_root=str(PROJECT_ROOT / "coco_dataset" / "contextual_crops"))
+    return assembler.get_image_to_label_mapping(split)
 
 
 def predict_single(
@@ -326,7 +300,7 @@ def main() -> None:
         raise FileNotFoundError(f"Annotations file not found: {ann_file}")
 
     class_names = load_class_names()
-    val_labels = load_val_labels(ann_file)
+    val_labels = load_val_labels(args.split)
 
     model = load_model(ckpt_path, device)
 
