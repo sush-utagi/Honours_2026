@@ -10,6 +10,7 @@ import os
 import sys
 import warnings
 from datetime import datetime
+from functools import lru_cache
 from itertools import product
 from pathlib import Path
 
@@ -72,6 +73,39 @@ def apply_padding_mask(
     result = synthetic_array.copy()
     result[padding_mask] = [padding_value, padding_value, padding_value]
 
+    return Image.fromarray(result)
+
+
+@lru_cache(maxsize=64)
+def _load_image_cached(path: str) -> Image.Image:
+    return Image.open(path).convert("RGB")
+
+@lru_cache(maxsize=64)
+def _get_canny_image_cached(path: str) -> Image.Image:
+    image_array = np.array(_load_image_cached(path))
+    edges = cv2.Canny(image_array, 100, 200)
+    return Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+
+@lru_cache(maxsize=64)
+def _is_padded_cached(path: str, padding_value: int = 127, tolerance: int = 2) -> bool:
+    return is_padded(_load_image_cached(path), padding_value, tolerance)
+
+@lru_cache(maxsize=64)
+def _get_padding_mask_cached(path: str, padding_value: int = 127, tolerance: int = 2) -> np.ndarray:
+    source_array = np.array(_load_image_cached(path))
+    return np.all(
+        np.abs(source_array.astype(int) - padding_value) < tolerance,
+        axis=-1
+    )
+
+def _apply_padding_mask_cached(
+    synthetic_image: Image.Image,
+    padding_mask: np.ndarray,
+    padding_value: int = 127,
+) -> Image.Image:
+    synthetic_array = np.array(synthetic_image.convert("RGB"))
+    result = synthetic_array.copy()
+    result[padding_mask] = [padding_value, padding_value, padding_value]
     return Image.fromarray(result)
 
 
@@ -352,10 +386,10 @@ def _generate_with_diffusers(
         prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, cn_paths, segs
     ):
         active_image = None if args.force_txt2img else (
-            Image.open(img_path).convert("RGB") if img_path else input_image
+            _load_image_cached(img_path) if img_path else input_image
         )
         # ControlNet conditioning image (from controlnet_image JSON field)
-        cn_image = Image.open(cn_path).convert("RGB") if cn_path else None
+        cn_image = _load_image_cached(cn_path) if cn_path else None
 
         generator_device = device if device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
@@ -390,7 +424,7 @@ def _generate_with_diffusers(
             common_kwargs["negative_pooled_prompt_embeds"] = neg_pooled_prompt
 
         if use_segnet and seg:
-            mask_rgb = polygon_to_mask(seg, image_height=512, image_width=512)
+            mask_rgb = polygon_to_mask(seg, image_height=512, image_width=512) # Potentially cacheable but inexpensive
             result = text2img(
                 image=mask_rgb,
                 controlnet_conditioning_scale=control_scale,
@@ -398,9 +432,13 @@ def _generate_with_diffusers(
             )
         elif use_canny and cn_image is not None:
             # Use the dedicated controlnet_image as the canny source
-            image_array = np.array(cn_image)
-            edges = cv2.Canny(image_array, 100, 200)
-            canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+            if cn_path:
+                canny_image = _get_canny_image_cached(cn_path)
+            else:
+                image_array = np.array(cn_image)
+                edges = cv2.Canny(image_array, 100, 200)
+                canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+                
             result = text2img(
                 image=canny_image,
                 controlnet_conditioning_scale=control_scale,
@@ -408,9 +446,13 @@ def _generate_with_diffusers(
             )
         elif use_canny and active_image is not None:
             # Fallback: use init_image as canny source (legacy / CLI mode)
-            image_array = np.array(active_image)
-            edges = cv2.Canny(image_array, 100, 200)
-            canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+            if img_path:
+                canny_image = _get_canny_image_cached(img_path)
+            else:
+                image_array = np.array(active_image)
+                edges = cv2.Canny(image_array, 100, 200)
+                canny_image = Image.fromarray(np.stack([edges, edges, edges], axis=-1))
+                
             result = text2img(
                 image=canny_image,
                 controlnet_conditioning_scale=control_scale,
@@ -426,8 +468,12 @@ def _generate_with_diffusers(
             result = text2img(**common_kwargs)
 
         image = result.images[0]
-        if active_image is not None and is_padded(active_image):
-            image = apply_padding_mask(image, active_image)
+        if active_image is not None:
+            if img_path and _is_padded_cached(img_path):
+                pad_mask = _get_padding_mask_cached(img_path)
+                image = _apply_padding_mask_cached(image, pad_mask)
+            elif not img_path and is_padded(active_image):
+                image = apply_padding_mask(image, active_image)
 
         seed_suffix = f"seed{seed}"
         cfg_suffix = f"cfg{cfg_scale:.1f}"
@@ -438,86 +484,78 @@ def _generate_with_diffusers(
         image.save(outpath)
         print(f"Wrote {outpath}")
 
-def _generate_with_local_sd(
-    args: argparse.Namespace,
-    repo_root: Path,
-    device: str,
-    prompts: list[str],
-    negative_prompts: list[str],
-    cfg_schedule: list[float],
-    steps_schedule: list[int],
-    strength_schedule: list[float],
-    control_schedule: list[float],
-    seeds: list[int],
-    run_outdir: Path,
-    timestamp: str,
-    input_image: Image.Image | None,
-    input_images: list[str] | None = None,  # accepted for API parity; not used in local backend
-):
-    sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
-    data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
+# def _generate_with_local_sd(
+#     args: argparse.Namespace,
+#     repo_root: Path,
+#     device: str,
+#     prompts: list[str],
+#     negative_prompts: list[str],
+#     cfg_schedule: list[float],
+#     steps_schedule: list[int],
+#     strength_schedule: list[float],
+#     control_schedule: list[float],
+#     seeds: list[int],
+#     run_outdir: Path,
+#     timestamp: str,
+#     input_image: Image.Image | None,
+#     # input_images: list[str] | None = None,  # accepted for API parity; not used in local backend
+# ):
+#     sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
+#     data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
 
-    vocab_path = data_dir / "vocab.json"
-    merges_path = data_dir / "merges.txt"
-    weights_path = "/Users/susheelutagi/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.ckpt"
+#     vocab_path = data_dir / "vocab.json"
+#     merges_path = data_dir / "merges.txt"
+#     weights_path = "/Users/susheelutagi/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.ckpt"
 
-    if str(sd_dir) not in sys.path:
-        sys.path.insert(0, str(sd_dir))
+#     if str(sd_dir) not in sys.path:
+#         sys.path.insert(0, str(sd_dir))
 
-    import model_loader  # type: ignore
-    import pipeline      # type: ignore
+#     import model_loader  # type: ignore
+#     import pipeline      # type: ignore
 
-    tokenizer = CLIPTokenizer(str(vocab_path), merges_file=str(merges_path))
-    models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
-    do_cfg = not args.no_cfg
+#     tokenizer = CLIPTokenizer(str(vocab_path), merges_file=str(merges_path))
+#     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
+#     do_cfg = not args.no_cfg
 
-    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds
-    ):
-        output_array = pipeline.generate(
-            prompt=prompt,
-            uncond_prompt=neg_prompt,
-            input_image=input_image,
-            strength=strength,
-            do_cfg=do_cfg,
-            cfg_scale=cfg_scale,
-            sampler_name=args.sampler,
-            n_inference_steps=n_steps,
-            seed=seed,
-            models=models,
-            device=device,
-            idle_device="cpu",
-            tokenizer=tokenizer,
-        )
-        image = Image.fromarray(output_array)
-        seed_suffix = f"seed{seed}"
-        cfg_suffix = f"cfg{cfg_scale:.1f}"
-        steps_suffix = f"steps{n_steps}"
-        strength_suffix = f"str{strength:.1f}"
-        control_suffix = f"cs{control_scale:.1f}"  # control_schedule not used in local backend; keep parity
-        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}.png"
-        image.save(outpath)
-        print(f"Wrote {outpath}")
+#     for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed in zip(
+#         prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds
+#     ):
+#         output_array = pipeline.generate(
+#             prompt=prompt,
+#             uncond_prompt=neg_prompt,
+#             input_image=input_image,
+#             strength=strength,
+#             do_cfg=do_cfg,
+#             cfg_scale=cfg_scale,
+#             sampler_name=args.sampler,
+#             n_inference_steps=n_steps,
+#             seed=seed,
+#             models=models,
+#             device=device,
+#             idle_device="cpu",
+#             tokenizer=tokenizer,
+#         )
+#         image = Image.fromarray(output_array)
+#         seed_suffix = f"seed{seed}"
+#         cfg_suffix = f"cfg{cfg_scale:.1f}"
+#         steps_suffix = f"steps{n_steps}"
+#         strength_suffix = f"str{strength:.1f}"
+#         control_suffix = f"cs{control_scale:.1f}"  # control_schedule not used in local backend; keep parity
+#         outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}.png"
+#         image.save(outpath)
+#         print(f"Wrote {outpath}")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
     parser.add_argument("--prompt", help="Text prompt (ignored when --from-json is used).", required=False)
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
-    parser.add_argument(
-        "--from-json",
-        default=None,
-        help="Path to a prompts JSON file; generates one image per sample in the file.",
-    )
+    parser.add_argument("--from-json",default=None,help="Path to a prompts JSON file; generates one image per sample in the file.",)
     parser.add_argument("--outdir", default=None, help="Output directory (default: data_generation_outputs).")
     parser.add_argument("--num-images", type=int, default=1, help="Number of images to generate.")
     parser.add_argument("--seed",type=int,default=None,help="Base seed (each image increments by 1). If omitted, uses a random base seed per run.",)
     parser.add_argument("--steps", type=int, default=30, help="Number of inference steps.")
-    parser.add_argument(
-        "--sampler",
-        default="euler-a",
-        help="Sampler name: ddpm, ddim, euler-a (ancestral, default), dpm++ sde, or dpmsolver variants.",
-    )
+    parser.add_argument("--sampler",default="euler-a",help="Sampler name: ddpm, ddim, euler-a (ancestral, default), dpm++ sde, or dpmsolver variants.",)
     parser.add_argument("--cfg-scale", type=float, default=9.0, help="Classifier-free guidance scale.")
     parser.add_argument("--sweep-cfg",action="store_true",help="Sweep integer cfg scales 5–13 (inclusive) across images (requires at least 9 images; remainder is distributed unevenly).")
     parser.add_argument("--sweep-num-steps",action="store_true",help="Sweep inference steps 10–50 in increments of 5 across images (requires at least 9 images",)
@@ -531,11 +569,8 @@ def main() -> int:
     parser.add_argument("--use-canny", action="store_true", help="Use Canny Edge ControlNet for generation.")
     parser.add_argument("--use-segnet", action="store_true", help="Use Segmentation ControlNet for generation.")
     parser.add_argument("--control-scale", type=float, default=1.0, help="ControlNet conditioning scale (0.0–1.0).")
-    parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",
-    )
-    parser.add_argument("--force-txt2img", action="store_true",
-        help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",
-    )
+    parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",)
+    parser.add_argument("--force-txt2img", action="store_true",help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",)
 
     args = parser.parse_args()
 
@@ -668,24 +703,24 @@ def main() -> int:
             control_scale=args.control_scale,
             embeddings=all_embeddings,
         )
-    else:
-        print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
-        _generate_with_local_sd(
-            args=args,
-            repo_root=repo_root,
-            device=device,
-            prompts=prompts,
-            negative_prompts=negative_prompts,
-            cfg_schedule=cfg_schedule,
-            steps_schedule=steps_schedule,
-            strength_schedule=strength_schedule,
-            control_schedule=control_schedule,
-            seeds=seeds,
-            run_outdir=run_outdir,
-            timestamp=timestamp,
-            input_image=input_image,
-            input_images=init_images,
-        )
+    # else:
+    #     print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
+    #     _generate_with_local_sd(
+    #         args=args,
+    #         repo_root=repo_root,
+    #         device=device,
+    #         prompts=prompts,
+    #         negative_prompts=negative_prompts,
+    #         cfg_schedule=cfg_schedule,
+    #         steps_schedule=steps_schedule,
+    #         strength_schedule=strength_schedule,
+    #         control_schedule=control_schedule,
+    #         seeds=seeds,
+    #         run_outdir=run_outdir,
+    #         timestamp=timestamp,
+    #         input_image=input_image,
+    #         input_images=init_images,
+    #     )
 
     return 0
 
