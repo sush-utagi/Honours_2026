@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import warnings
+from dataclasses import dataclass
 from datetime import datetime
 from functools import lru_cache
 from itertools import product
@@ -109,13 +110,19 @@ def _apply_padding_mask_cached(
     return Image.fromarray(result)
 
 
-def _select_device(allow_cuda: bool, allow_mps: bool) -> str:
-    return os.getenv("DEVICE", "cpu")
-
-
-def _env_flag(var_name: str) -> bool:
-    val = os.getenv(var_name, "").strip().lower()
-    return val == 'true'
+@dataclass
+class EnvConfig:
+    device: str
+    use_hg_diffusers: bool
+    model_id: str
+    is_xl: bool
+    is_local: bool
+    safety_enabled: bool
+    ip_repo_id: str
+    ip_subfolder: str
+    ip_weight_name: str
+    ip_scale: float
+    control_scale: float
 
 
 def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], list[float], list[float]]:
@@ -203,17 +210,8 @@ def _resolve_diffusers_scheduler(config, sampler_name: str):
     return None
 
 
-def _is_sdxl_model(model_id: str) -> bool:
-    lower = model_id.lower()
-    return "sdxl" in lower or "stable-diffusion-xl" in lower
-
-
-def _is_local_weights_file(path: str) -> bool:
-    return path.endswith((".safetensors", ".ckpt"))
-
-
 def _prepare_diffusers_pipelines(
-    device: str,
+    env_config: EnvConfig,
     sampler_name: str,
     use_canny: bool = False,
     use_segnet: bool = False,
@@ -236,17 +234,10 @@ def _prepare_diffusers_pipelines(
 
     from compel import Compel, ReturnedEmbeddingsType
 
-    model_id_env = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip()
-    model_id = model_id_env or "runwayml/stable-diffusion-v1-5"
-    is_xl = _is_sdxl_model(model_id)
-    is_local = _is_local_weights_file(model_id)
-
-    # MPS can produce black outputs with float16; keep fp16 only on CUDA else: fp32
-    torch_dtype = torch.float16 if device == "cuda" else torch.float32
-    safety_enabled = _env_flag("ENABLE_SAFETY_CHECKER")
+    torch_dtype = torch.float16 if env_config.device == "cuda" else torch.float32
 
     pipeline_kwargs = {"torch_dtype": torch_dtype}
-    if not is_xl and not safety_enabled:
+    if not env_config.is_xl and not env_config.safety_enabled:
         pipeline_kwargs["safety_checker"] = None
         pipeline_kwargs["feature_extractor"] = None
 
@@ -256,46 +247,46 @@ def _prepare_diffusers_pipelines(
     if use_canny or use_segnet:
         if use_segnet:
             controlnet_model_id = (
-                "diffusers/controlnet-canny-sdxl-1.0" if is_xl  # Fallback
+                "diffusers/controlnet-canny-sdxl-1.0" if env_config.is_xl  # Fallback
                 else "lllyasviel/sd-controlnet-seg"
             )
             print(f"[pipeline] loading ControlNet (Segmentation): {controlnet_model_id}")
         else:
             controlnet_model_id = (
-                "diffusers/controlnet-canny-sdxl-1.0" if is_xl
+                "diffusers/controlnet-canny-sdxl-1.0" if env_config.is_xl
                 else "lllyasviel/sd-controlnet-canny"
             )
             print(f"[pipeline] loading ControlNet (Canny): {controlnet_model_id}")
         controlnet = ControlNetModel.from_pretrained(controlnet_model_id, torch_dtype=torch_dtype)
 
-    load_method = "from_single_file (local)" if is_local else "from_pretrained"
+    load_method = "from_single_file (local)" if env_config.is_local else "from_pretrained"
     print(f"[pipeline] sampler: {sampler_name}")
-    print(f"[pipeline] loading {'SDXL' if is_xl else 'SD 1.x'} model: {model_id} ({load_method})")
+    print(f"[pipeline] loading {'SDXL' if env_config.is_xl else 'SD 1.x'} model: {env_config.model_id} ({load_method})")
 
     if (use_canny or use_segnet) and controlnet is not None:
-        if is_local:
-            if not Path(model_id).exists():
-                raise FileNotFoundError(f"Local weights file not found: {model_id}")
-            PipelineClass = StableDiffusionXLControlNetPipeline if is_xl else StableDiffusionControlNetPipeline
-            text2img = PipelineClass.from_single_file(model_id, controlnet=controlnet, **pipeline_kwargs)
-        elif is_xl:
+        if env_config.is_local:
+            if not Path(env_config.model_id).exists():
+                raise FileNotFoundError(f"Local weights file not found: {env_config.model_id}")
+            PipelineClass = StableDiffusionXLControlNetPipeline if env_config.is_xl else StableDiffusionControlNetPipeline
+            text2img = PipelineClass.from_single_file(env_config.model_id, controlnet=controlnet, **pipeline_kwargs)
+        elif env_config.is_xl:
             text2img = StableDiffusionXLControlNetPipeline.from_pretrained(
-                model_id, controlnet=controlnet, **pipeline_kwargs
+                env_config.model_id, controlnet=controlnet, **pipeline_kwargs
             )
         else:
             text2img = StableDiffusionControlNetPipeline.from_pretrained(
-                model_id, controlnet=controlnet, **pipeline_kwargs
+                env_config.model_id, controlnet=controlnet, **pipeline_kwargs
             )
     else:
-        if is_local:
-            if not Path(model_id).exists():
-                raise FileNotFoundError(f"Local weights file not found: {model_id}")
-            PipelineClass = StableDiffusionXLPipeline if is_xl else StableDiffusionPipeline
-            text2img = PipelineClass.from_single_file(model_id, **pipeline_kwargs)
-        elif is_xl:
-            text2img = StableDiffusionXLPipeline.from_pretrained(model_id, **pipeline_kwargs)
+        if env_config.is_local:
+            if not Path(env_config.model_id).exists():
+                raise FileNotFoundError(f"Local weights file not found: {env_config.model_id}")
+            PipelineClass = StableDiffusionXLPipeline if env_config.is_xl else StableDiffusionPipeline
+            text2img = PipelineClass.from_single_file(env_config.model_id, **pipeline_kwargs)
+        elif env_config.is_xl:
+            text2img = StableDiffusionXLPipeline.from_pretrained(env_config.model_id, **pipeline_kwargs)
         else:
-            text2img = StableDiffusionPipeline.from_pretrained(model_id, **pipeline_kwargs)
+            text2img = StableDiffusionPipeline.from_pretrained(env_config.model_id, **pipeline_kwargs)
 
     # Load textual inversion embeddings (if any). We do this after pipeline init so weights are available.
     for emb_path in embeddings or []:
@@ -308,29 +299,21 @@ def _prepare_diffusers_pipelines(
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
         text2img.scheduler = scheduler
-    text2img = text2img.to(device)
-    text2img.enable_attention_slicing()
+    text2img = text2img.to(env_config.device)
+    try:
+        text2img.load_ip_adapter(env_config.ip_repo_id, subfolder=env_config.ip_subfolder, weight_name=env_config.ip_weight_name)
+        text2img.set_ip_adapter_scale(env_config.ip_scale)
+        print(f"[pipeline] loaded IP-Adapter ({env_config.ip_weight_name}) with scale {env_config.ip_scale}")
+    except Exception as e:
+        print(f"[pipeline] warning: failed to load IP-Adapter: {e}")
+
+    # text2img.enable_attention_slicing()
     if hasattr(text2img, "vae") and hasattr(text2img.vae, "enable_slicing"):
         text2img.vae.enable_slicing()
     text2img.set_progress_bar_config(disable=True)
 
-    ip_repo_id = os.getenv("HF_IP_ADAPTER_REPO_ID", "h94/IP-Adapter")
-    ip_subfolder = os.getenv("HF_IP_ADAPTER_SUBFOLDER", "sdxl_models" if is_xl else "models")
-    ip_weight_name = os.getenv("HF_IP_ADAPTER_WEIGHT_NAME", "ip-adapter_sdxl_vit-h.bin" if is_xl else "ip-adapter_sd15.bin")
-    try:
-        ip_scale = float(os.getenv("HF_IP_ADAPTER_SCALE", "0.6"))
-    except ValueError:
-        ip_scale = 0.6
-
-    try:
-        text2img.load_ip_adapter(ip_repo_id, subfolder=ip_subfolder, weight_name=ip_weight_name)
-        text2img.set_ip_adapter_scale(ip_scale)
-        print(f"[pipeline] loaded IP-Adapter ({ip_weight_name}) with scale {ip_scale}")
-    except Exception as e:
-        print(f"[pipeline] warning: failed to load IP-Adapter: {e}")
-
     img2img_components = {k: v for k, v in text2img.components.items() if k != "controlnet"}
-    if is_xl:
+    if env_config.is_xl:
         img2img = StableDiffusionXLImg2ImgPipeline(**img2img_components)
     else:
         img2img = StableDiffusionImg2ImgPipeline(**img2img_components)
@@ -338,14 +321,14 @@ def _prepare_diffusers_pipelines(
     scheduler_img = _resolve_diffusers_scheduler(img2img.scheduler.config, sampler_name)
     if scheduler_img is not None:
         img2img.scheduler = scheduler_img
-    img2img = img2img.to(device)
-    img2img.enable_attention_slicing()
+    img2img = img2img.to(env_config.device)
+    # img2img.enable_attention_slicing()
     if hasattr(img2img, "vae") and hasattr(img2img.vae, "enable_slicing"):
         img2img.vae.enable_slicing()
     img2img.set_progress_bar_config(disable=True)
 
     # Compel setup differs between SD 1.x (single tokenizer) and SDXL (dual tokenizer)
-    if is_xl:
+    if env_config.is_xl:
         # Suppress "passing multiple tokenizers/text encoders is deprecated" –
         # the replacement (CompelForSDXL) isn't available until compel v3.
         with warnings.catch_warnings():
@@ -362,12 +345,12 @@ def _prepare_diffusers_pipelines(
             text_encoder=text2img.text_encoder,
         )
 
-    return text2img, img2img, compel, is_xl
+    return text2img, img2img, compel
 
 
 def _generate_with_diffusers(
     args: argparse.Namespace,
-    device: str,
+    env_config: EnvConfig,
     prompts: list[str],
     negative_prompts: list[str],
     cfg_schedule: list[float],
@@ -387,8 +370,8 @@ def _generate_with_diffusers(
     control_scale: float = 1.0,
     embeddings: list[str] | None = None,
 ):
-    text2img, img2img, compel, is_xl = _prepare_diffusers_pipelines(
-        device=device,
+    text2img, img2img, compel = _prepare_diffusers_pipelines(
+        env_config=env_config,
         sampler_name=args.sampler,
         use_canny=use_canny,
         use_segnet=use_segnet,
@@ -411,12 +394,12 @@ def _generate_with_diffusers(
         # IP Adapter reference image
         ip_image = _load_image_cached(ip_path) if ip_path else None
 
-        generator_device = device if device in {"cuda", "mps"} else "cpu"
+        generator_device = env_config.device if env_config.device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
         guidance_scale = 9.0 if args.no_cfg else cfg_scale
 
         # SDXL compel returns (embeds, pooled) but  1.x returns just embeds
-        if is_xl:
+        if env_config.is_xl:
             prompt_embeds, pooled_prompt = compel(prompt)
             neg_prompt_embeds, neg_pooled_prompt = compel(neg_prompt)
             prompt_embeds, neg_prompt_embeds = compel.pad_conditioning_tensors_to_same_length(
@@ -439,7 +422,7 @@ def _generate_with_diffusers(
             "num_inference_steps": n_steps,
             "generator": generator,
         }
-        if is_xl:
+        if env_config.is_xl:
             common_kwargs["pooled_prompt_embeds"] = pooled_prompt
             common_kwargs["negative_pooled_prompt_embeds"] = neg_pooled_prompt
             
@@ -509,6 +492,33 @@ def _generate_with_diffusers(
 
 
 def main() -> int:
+    model_id = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "runwayml/stable-diffusion-v1-5").strip()
+    is_xl = "sdxl" in model_id.lower() or "stable-diffusion-xl" in model_id.lower()
+    
+    try:
+        ip_scale = float(os.getenv("HF_IP_ADAPTER_SCALE", "0.6"))
+    except ValueError:
+        ip_scale = 0.6
+        
+    try:
+        default_control_scale = float(os.getenv("HF_CONTROLNET_SCALE", "1.0"))
+    except ValueError:
+        default_control_scale = 1.0
+
+    env_config = EnvConfig(
+        device=os.getenv("DEVICE", "cpu"),
+        use_hg_diffusers=os.getenv("USE_HG_DIFFUSERS", "").strip().lower() == "true",
+        model_id=model_id,
+        is_xl=is_xl,
+        is_local=model_id.endswith((".safetensors", ".ckpt")),
+        safety_enabled=os.getenv("ENABLE_SAFETY_CHECKER", "").strip().lower() == "true",
+        ip_repo_id=os.getenv("HF_IP_ADAPTER_REPO_ID", "h94/IP-Adapter"),
+        ip_subfolder=os.getenv("HF_IP_ADAPTER_SUBFOLDER", "sdxl_models" if is_xl else "models"),
+        ip_weight_name=os.getenv("HF_IP_ADAPTER_WEIGHT_NAME", "ip-adapter_sdxl_vit-h.bin" if is_xl else "ip-adapter_sd15.bin"),
+        ip_scale=ip_scale,
+        control_scale=default_control_scale,
+    )
+    
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
     parser.add_argument("--prompt", help="Text prompt (ignored when --from-json is used).", required=False)
     parser.add_argument("--negative-prompt", default="", help="Negative prompt (unconditional prompt).")
@@ -530,21 +540,22 @@ def main() -> int:
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
     parser.add_argument("--use-canny", action="store_true", help="Use Canny Edge ControlNet for generation.")
     parser.add_argument("--use-segnet", action="store_true", help="Use Segmentation ControlNet for generation.")
-    try:
-        default_control_scale = float(os.getenv("HF_CONTROLNET_SCALE", "1.0"))
-    except ValueError:
-        default_control_scale = 1.0
-    parser.add_argument("--control-scale", type=float, default=default_control_scale, help="ControlNet conditioning scale (0.0–1.0).")
+    parser.add_argument("--control-scale", type=float, default=env_config.control_scale, help="ControlNet conditioning scale (0.0–1.0).")
     parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",)
     parser.add_argument("--force-txt2img", action="store_true",help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",)
 
     args = parser.parse_args()
 
-    use_hg_diffusers = _env_flag("USE_HG_DIFFUSERS")
     repo_root = _repo_root()
 
-    device = _select_device(allow_cuda=args.allow_cuda, allow_mps=not args.no_mps)
-    print(f"Using device: {device}")
+    if not args.allow_cuda and not ("mps" if not args.no_mps else False):
+        pass # Allow device override if explicit arguments restrict it, but generally rely on env_config.device.
+    if args.no_mps and env_config.device == "mps":
+        env_config.device = "cpu"
+    elif args.allow_cuda and torch.cuda.is_available():
+        env_config.device = "cuda"
+
+    print(f"Using device: {env_config.device}")
 
     input_image = Image.open(args.init_image).convert("RGB") if args.init_image else None
 
@@ -648,12 +659,11 @@ def main() -> int:
     # Combine embeddings from CLI and JSON (JSON first so run-specific embeddings load before global ones)
     all_embeddings = json_embeddings + [str(p) for p in args.embeddings]
 
-    if use_hg_diffusers:
-        model_id = (os.getenv("HF_DIFFUSERS_MODEL_ID", "") or "").strip() or "runwayml/stable-diffusion-v1-5"
-        print(f"USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend ({model_id}).")
+    if env_config.use_hg_diffusers:
+        print(f"USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend ({env_config.model_id}).")
         _generate_with_diffusers(
             args=args,
-            device=device,
+            env_config=env_config,
             prompts=prompts,
             negative_prompts=negative_prompts,
             cfg_schedule=cfg_schedule,
