@@ -210,12 +210,15 @@ def _resolve_diffusers_scheduler(config, sampler_name: str):
     return None
 
 
+
+
 def _prepare_diffusers_pipelines(
     env_config: EnvConfig,
     sampler_name: str,
     use_canny: bool = False,
     use_segnet: bool = False,
     embeddings: list[str] | None = None,
+    use_ip_adapter: bool = False
 ):
     try:
         from diffusers import (
@@ -233,6 +236,7 @@ def _prepare_diffusers_pipelines(
         ) from exc
 
     from compel import Compel, ReturnedEmbeddingsType
+    from pathlib import Path
 
     torch_dtype = torch.float16 if env_config.device == "cuda" else torch.float32
 
@@ -299,13 +303,20 @@ def _prepare_diffusers_pipelines(
     scheduler = _resolve_diffusers_scheduler(text2img.scheduler.config, sampler_name)
     if scheduler is not None:
         text2img.scheduler = scheduler
-    text2img = text2img.to(env_config.device)
-    try:
-        text2img.load_ip_adapter(env_config.ip_repo_id, subfolder=env_config.ip_subfolder, weight_name=env_config.ip_weight_name)
+    
+    # -ip-adapter init
+    if use_ip_adapter:
+        print(f"[pipeline] Attaching IP-Adapter ({env_config.ip_weight_name})...")
+        text2img.load_ip_adapter(
+            env_config.ip_repo_id, 
+            subfolder=env_config.ip_subfolder, 
+            weight_name=env_config.ip_weight_name
+        )
         text2img.set_ip_adapter_scale(env_config.ip_scale)
-        print(f"[pipeline] loaded IP-Adapter ({env_config.ip_weight_name}) with scale {env_config.ip_scale}")
-    except Exception as e:
-        print(f"[pipeline] warning: failed to load IP-Adapter: {e}")
+        print(f"[pipeline] loaded IP-Adapter with scale {env_config.ip_scale}")
+
+    # cast the fully assembled pipeline to the device
+    text2img = text2img.to(env_config.device)
 
     # text2img.enable_attention_slicing()
     if hasattr(text2img, "vae") and hasattr(text2img.vae, "enable_slicing"):
@@ -321,7 +332,11 @@ def _prepare_diffusers_pipelines(
     scheduler_img = _resolve_diffusers_scheduler(img2img.scheduler.config, sampler_name)
     if scheduler_img is not None:
         img2img.scheduler = scheduler_img
+    
+    # img2img components are already on the device because they reference text2img components, 
+    # but calling .to() here is safe and standard practice.
     img2img = img2img.to(env_config.device)
+    
     # img2img.enable_attention_slicing()
     if hasattr(img2img, "vae") and hasattr(img2img.vae, "enable_slicing"):
         img2img.vae.enable_slicing()
@@ -369,6 +384,7 @@ def _generate_with_diffusers(
     use_segnet: bool = False,
     control_scale: float = 1.0,
     embeddings: list[str] | None = None,
+    use_ip_adapter: bool = False
 ):
     text2img, img2img, compel = _prepare_diffusers_pipelines(
         env_config=env_config,
@@ -376,6 +392,7 @@ def _generate_with_diffusers(
         use_canny=use_canny,
         use_segnet=use_segnet,
         embeddings=embeddings,
+        use_ip_adapter=use_ip_adapter
     )
     img_paths = input_images if input_images is not None else [""] * len(prompts)
     cn_paths = controlnet_images if controlnet_images is not None else [""] * len(prompts)
@@ -543,6 +560,7 @@ def main() -> int:
     parser.add_argument("--control-scale", type=float, default=env_config.control_scale, help="ControlNet conditioning scale (0.0–1.0).")
     parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",)
     parser.add_argument("--force-txt2img", action="store_true",help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",)
+    parser.add_argument("--use-ip-adapter", action="store_true", help="Use IP-Adapter with the specified reference images (from ip_image JSON field or --ip-image CLI flag).")
 
     args = parser.parse_args()
 
@@ -588,7 +606,9 @@ def main() -> int:
             args.use_canny = True
         elif generation_mode == "ti":
             print(f"[pipeline] JSON generation_mode='ti' — using Textual Inversion.")
-
+        elif generation_mode == "ip_adapter":
+            print(f"[pipeline] JSON generation_mode='ip_adapter' — using IP-Adapter.")
+            args.use_ip_adapter = True  # Enable the IP flag
         # Optional textual inversion embedding(s) supplied at top-level of JSON.
         # Skip embedding loading for controlnet mode (uses plain words, no TI).
         if embedding_path and generation_mode != "controlnet":
@@ -682,6 +702,7 @@ def main() -> int:
             use_segnet=args.use_segnet,
             control_scale=args.control_scale,
             embeddings=all_embeddings,
+            use_ip_adapter=getattr(args, 'use_ip_adapter', False)
         )
 
     return 0

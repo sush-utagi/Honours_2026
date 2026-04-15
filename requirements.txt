@@ -21,4 +21,5 @@ graphviz
 compel
 umap-learn
 tensorboard
+lpips
 scikit-learn>=1.6
