@@ -314,6 +314,21 @@ def _prepare_diffusers_pipelines(
         text2img.vae.enable_slicing()
     text2img.set_progress_bar_config(disable=True)
 
+    ip_repo_id = os.getenv("HF_IP_ADAPTER_REPO_ID", "h94/IP-Adapter")
+    ip_subfolder = os.getenv("HF_IP_ADAPTER_SUBFOLDER", "sdxl_models" if is_xl else "models")
+    ip_weight_name = os.getenv("HF_IP_ADAPTER_WEIGHT_NAME", "ip-adapter_sdxl_vit-h.bin" if is_xl else "ip-adapter_sd15.bin")
+    try:
+        ip_scale = float(os.getenv("HF_IP_ADAPTER_SCALE", "0.6"))
+    except ValueError:
+        ip_scale = 0.6
+
+    try:
+        text2img.load_ip_adapter(ip_repo_id, subfolder=ip_subfolder, weight_name=ip_weight_name)
+        text2img.set_ip_adapter_scale(ip_scale)
+        print(f"[pipeline] loaded IP-Adapter ({ip_weight_name}) with scale {ip_scale}")
+    except Exception as e:
+        print(f"[pipeline] warning: failed to load IP-Adapter: {e}")
+
     img2img_components = {k: v for k, v in text2img.components.items() if k != "controlnet"}
     if is_xl:
         img2img = StableDiffusionXLImg2ImgPipeline(**img2img_components)
@@ -365,6 +380,7 @@ def _generate_with_diffusers(
     input_image: Image.Image | None,
     input_images: list[str] | None = None,
     controlnet_images: list[str] | None = None,
+    ip_images: list[str] | None = None,
     segmentations: list[list[list[float]]] | None = None,
     use_canny: bool = False,
     use_segnet: bool = False,
@@ -380,16 +396,20 @@ def _generate_with_diffusers(
     )
     img_paths = input_images if input_images is not None else [""] * len(prompts)
     cn_paths = controlnet_images if controlnet_images is not None else [""] * len(prompts)
+    ip_paths = ip_images if ip_images is not None else [""] * len(prompts)
     segs = segmentations if segmentations is not None else [[]] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed, img_path, cn_path, seg in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, cn_paths, segs
+    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed, img_path, cn_path, ip_path, seg in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, cn_paths, ip_paths, segs
     ):
         active_image = None if args.force_txt2img else (
             _load_image_cached(img_path) if img_path else input_image
         )
         # ControlNet conditioning image (from controlnet_image JSON field)
         cn_image = _load_image_cached(cn_path) if cn_path else None
+        
+        # IP Adapter reference image
+        ip_image = _load_image_cached(ip_path) if ip_path else None
 
         generator_device = device if device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
@@ -422,6 +442,9 @@ def _generate_with_diffusers(
         if is_xl:
             common_kwargs["pooled_prompt_embeds"] = pooled_prompt
             common_kwargs["negative_pooled_prompt_embeds"] = neg_pooled_prompt
+            
+        if ip_image is not None:
+            common_kwargs["ip_adapter_image"] = ip_image
 
         if use_segnet and seg:
             mask_rgb = polygon_to_mask(seg, image_height=512, image_width=512) # Potentially cacheable but inexpensive
@@ -507,7 +530,11 @@ def main() -> int:
     parser.add_argument("--no-mps", action="store_true", help="Disable Apple MPS even if available.")
     parser.add_argument("--use-canny", action="store_true", help="Use Canny Edge ControlNet for generation.")
     parser.add_argument("--use-segnet", action="store_true", help="Use Segmentation ControlNet for generation.")
-    parser.add_argument("--control-scale", type=float, default=1.0, help="ControlNet conditioning scale (0.0–1.0).")
+    try:
+        default_control_scale = float(os.getenv("HF_CONTROLNET_SCALE", "1.0"))
+    except ValueError:
+        default_control_scale = 1.0
+    parser.add_argument("--control-scale", type=float, default=default_control_scale, help="ControlNet conditioning scale (0.0–1.0).")
     parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",)
     parser.add_argument("--force-txt2img", action="store_true",help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",)
 
@@ -577,6 +604,7 @@ def main() -> int:
         control_schedule: list[float] = []
         init_images: list[str] = []
         controlnet_images: list[str] = []
+        ip_images: list[str] = []
         segmentations: list[list[list[float]]] = []
 
         for idx, sample in enumerate(samples):
@@ -593,6 +621,7 @@ def main() -> int:
             control_schedule.append(float(sample.get("control_scale", args.control_scale)))
             init_images.append(sample.get("init_image", ""))
             controlnet_images.append(sample.get("controlnet_image", ""))
+            ip_images.append(sample.get("ip_image", ""))
             segmentations.append(sample.get("segmentation", []))
 
         num_images = len(prompts)
@@ -637,6 +666,7 @@ def main() -> int:
             input_image=input_image,
             input_images=init_images,
             controlnet_images=controlnet_images if args.from_json else None,
+            ip_images=ip_images if args.from_json else None,
             segmentations=segmentations if args.from_json else None,
             use_canny=args.use_canny,
             use_segnet=args.use_segnet,
