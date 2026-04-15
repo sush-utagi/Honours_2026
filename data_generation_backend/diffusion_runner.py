@@ -484,67 +484,6 @@ def _generate_with_diffusers(
         image.save(outpath)
         print(f"Wrote {outpath}")
 
-# def _generate_with_local_sd(
-#     args: argparse.Namespace,
-#     repo_root: Path,
-#     device: str,
-#     prompts: list[str],
-#     negative_prompts: list[str],
-#     cfg_schedule: list[float],
-#     steps_schedule: list[int],
-#     strength_schedule: list[float],
-#     control_schedule: list[float],
-#     seeds: list[int],
-#     run_outdir: Path,
-#     timestamp: str,
-#     input_image: Image.Image | None,
-#     # input_images: list[str] | None = None,  # accepted for API parity; not used in local backend
-# ):
-#     sd_dir = repo_root / "data_generation_backend" / "diffusion_model" / "sd"
-#     data_dir = repo_root / "data_generation_backend" / "diffusion_model" / "data"
-
-#     vocab_path = data_dir / "vocab.json"
-#     merges_path = data_dir / "merges.txt"
-#     weights_path = "/Users/susheelutagi/Documents/ComfyUI/models/checkpoints/v1-5-pruned-emaonly.ckpt"
-
-#     if str(sd_dir) not in sys.path:
-#         sys.path.insert(0, str(sd_dir))
-
-#     import model_loader  # type: ignore
-#     import pipeline      # type: ignore
-
-#     tokenizer = CLIPTokenizer(str(vocab_path), merges_file=str(merges_path))
-#     models = model_loader.preload_models_from_standard_weights(str(weights_path), device)
-#     do_cfg = not args.no_cfg
-
-#     for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed in zip(
-#         prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds
-#     ):
-#         output_array = pipeline.generate(
-#             prompt=prompt,
-#             uncond_prompt=neg_prompt,
-#             input_image=input_image,
-#             strength=strength,
-#             do_cfg=do_cfg,
-#             cfg_scale=cfg_scale,
-#             sampler_name=args.sampler,
-#             n_inference_steps=n_steps,
-#             seed=seed,
-#             models=models,
-#             device=device,
-#             idle_device="cpu",
-#             tokenizer=tokenizer,
-#         )
-#         image = Image.fromarray(output_array)
-#         seed_suffix = f"seed{seed}"
-#         cfg_suffix = f"cfg{cfg_scale:.1f}"
-#         steps_suffix = f"steps{n_steps}"
-#         strength_suffix = f"str{strength:.1f}"
-#         control_suffix = f"cs{control_scale:.1f}"  # control_schedule not used in local backend; keep parity
-#         outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}.png"
-#         image.save(outpath)
-#         print(f"Wrote {outpath}")
-
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Generate images with Stable Diffusion v1.5.")
@@ -704,24 +643,6 @@ def main() -> int:
             control_scale=args.control_scale,
             embeddings=all_embeddings,
         )
-    # else:
-    #     print("USE_HG_DIFFUSERS not set/false -> using local Stable Diffusion backend (diffusion_model).")
-    #     _generate_with_local_sd(
-    #         args=args,
-    #         repo_root=repo_root,
-    #         device=device,
-    #         prompts=prompts,
-    #         negative_prompts=negative_prompts,
-    #         cfg_schedule=cfg_schedule,
-    #         steps_schedule=steps_schedule,
-    #         strength_schedule=strength_schedule,
-    #         control_schedule=control_schedule,
-    #         seeds=seeds,
-    #         run_outdir=run_outdir,
-    #         timestamp=timestamp,
-    #         input_image=input_image,
-    #         input_images=init_images,
-    #     )
 
     return 0
 

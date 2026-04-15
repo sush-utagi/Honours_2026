@@ -1,0 +1,54 @@
+{
+    "total_cluster_size": 139,
+    "references": [
+        {
+            "filename": "309797_1188242.jpg",
+            "cluster_index": 0,
+            "cluster_size": 47,
+            "cosine_similarity": 0.93492,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/309797_1188242.jpg"
+        },
+        {
+            "filename": "432037_1188194.jpg",
+            "cluster_index": 1,
+            "cluster_size": 3,
+            "cosine_similarity": 0.94556,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/432037_1188194.jpg"
+        },
+        {
+            "filename": "129117_1188391.jpg",
+            "cluster_index": 2,
+            "cluster_size": 4,
+            "cosine_similarity": 0.89992,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/129117_1188391.jpg"
+        },
+        {
+            "filename": "50636_1996940.jpg",
+            "cluster_index": 3,
+            "cluster_size": 16,
+            "cosine_similarity": 0.91395,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/50636_1996940.jpg"
+        },
+        {
+            "filename": "543942_1675979.jpg",
+            "cluster_index": 4,
+            "cluster_size": 27,
+            "cosine_similarity": 0.91981,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/543942_1675979.jpg"
+        },
+        {
+            "filename": "202739_1188379.jpg",
+            "cluster_index": 5,
+            "cluster_size": 38,
+            "cosine_similarity": 0.9421,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/202739_1188379.jpg"
+        },
+        {
+            "filename": "259192_1676060.jpg",
+            "cluster_index": 6,
+            "cluster_size": 4,
+            "cosine_similarity": 0.88949,
+            "original_path": "/Users/susheelutagi/Documents/GitHub/Honours_2026/coco_dataset/contextual_crops/images/train/259192_1676060.jpg"
+        }
+    ]
+}

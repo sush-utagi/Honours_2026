@@ -49,13 +49,8 @@ def is_usable_conditioning_image(
 
 
 TARGET_CLASSES: dict[str, str] = {
-    "toaster": "<coco-toaster>",
-    "hair drier": "<coco-dryer>",
-}
-
-EMBEDDING_PATHS: dict[str, str] = {
-    "toaster": "data_generation_backend/embeddings/toaster/learned_embeds.safetensors",
-    "hair drier": "data_generation_backend/embeddings/dryer/learned_embeds.safetensors",
+    "toaster": "toaster",
+    "hair drier": "hair drier",
 }
 
 CONTROLNET_ANNOTATIONS = "../../coco_dataset/contextual_crops/annotations/single_instances_train.json"
@@ -134,34 +129,66 @@ def build_prompt(cls: str, placeholder: str) -> str:
     return ", ".join(p for p in parts if p)
 
 
+def sample_ip_adapter_images(cls: str, num_samples: int) -> list[str]:
+    safe_cls = cls.replace(" ", "_")
+    script_dir = Path(__file__).resolve().parent
+    meta_path = script_dir / "selected_references" / safe_cls / "metadata.json"
+    
+    if not meta_path.exists():
+        print(f"[warn] No metadata found for IP adapter at {meta_path}.")
+        return [""] * num_samples
+        
+    with open(meta_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+        
+    refs = data.get("references", [])
+    if not refs:
+        print(f"[warn] No references array found in {meta_path}.")
+        return [""] * num_samples
+        
+    paths = [r["original_path"] for r in refs]
+    weights = [r["cluster_size"] for r in refs]
+    
+    total = sum(weights)
+    if total == 0:
+        probs = [1.0 / len(weights)] * len(weights)
+    else:
+        probs = [w / total for w in weights]
+        
+    chosen = random.choices(paths, weights=probs, k=num_samples)
+    return chosen
+
 def generate_and_save_class_jsons(
     classes: dict[str, str],
     num_per_class: int = 100,
-    mode: str = "ti",
+    mode: str = "ip_adapter",
 ) -> None:
     cwd = Path.cwd()
 
     # Build ControlNet candidates once if needed
     candidates: dict[str, list[str]] = {}
-    if mode == "controlnet":
+    if mode in ("controlnet", "hybrid"):
         candidates = build_controlnet_candidates(classes)
+        
+    ip_images_dict: dict[str, list[str]] = {}
+    if mode in ("ip_adapter", "hybrid"):
+        for cls in classes:
+            ip_images_dict[cls] = sample_ip_adapter_images(cls, num_per_class)
 
-    for cls, placeholder in classes.items():
+    for cls, _ in classes.items():
         warned_empty = False
         controlnet_valid_count = 0
-
-        # ControlNet uses plain words, TI uses the learned placeholder token
-        prompt_token = cls if mode == "controlnet" else placeholder
+        prompt_token = cls
 
         samples = []
-        for _ in range(num_per_class):
+        for i in range(num_per_class):
             sample: dict = {
                 "prompt": build_prompt(cls, prompt_token),
                 "negative_prompt": NEGATIVE_PROMPTS.get(cls, _BASE_NEG),
                 "cfg_scale": round(random.uniform(5.0, 9.0), 1),
             }
 
-            if mode == "controlnet":
+            if mode in ("controlnet", "hybrid"):
                 cls_candidates = candidates.get(cls, [])
                 if cls_candidates:
                     sample["controlnet_image"] = random.choice(cls_candidates)
@@ -171,12 +198,14 @@ def generate_and_save_class_jsons(
                     if not warned_empty:
                         print(f"[warn] No valid ControlNet conditioning images for class '{cls}'. All samples will have empty controlnet_image.")
                         warned_empty = True
+            
+            if mode in ("ip_adapter", "hybrid"):
+                sample["ip_image"] = ip_images_dict[cls][i]
 
             samples.append(sample)
 
         final_data = {
             "coco_class": cls,
-            "embedding_path": EMBEDDING_PATHS.get(cls, ""),
             "generation_mode": mode,
             "samples": samples,
         }
@@ -185,7 +214,7 @@ def generate_and_save_class_jsons(
         with open(cwd / filename, "w", encoding="utf-8") as f:
             json.dump(final_data, f, indent=4)
 
-        if mode == "controlnet":
+        if mode in ("controlnet", "hybrid"):
             empty_count = num_per_class - controlnet_valid_count
             print(f"[done] Saved {filename} with {num_per_class} samples (mode={mode}, {controlnet_valid_count} with conditioning image, {empty_count} empty).")
         else:
@@ -195,6 +224,6 @@ def generate_and_save_class_jsons(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate image prompts for specific COCO classes.")
     parser.add_argument("-n", type=int, default=10, help="Number of prompts to generate per class (default: 10).")
-    parser.add_argument("--mode", choices=["ti", "controlnet"], default="ti", help="Generation mode: 'ti' for text2img with textual inversion, 'controlnet' for ControlNet canny (default: ti).")
+    parser.add_argument("--mode", choices=["ip_adapter", "controlnet", "hybrid"], default="ip_adapter", help="Generation mode: 'ip_adapter', 'controlnet', or 'hybrid' (default: ip_adapter).")
     args = parser.parse_args()
     generate_and_save_class_jsons(TARGET_CLASSES, num_per_class=args.n, mode=args.mode)
