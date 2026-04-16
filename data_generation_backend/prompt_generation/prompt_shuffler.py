@@ -50,7 +50,7 @@ def is_usable_conditioning_image(
 
 TARGET_CLASSES: dict[str, str] = {
     "toaster": "toaster",
-    "hair drier": "hair drier",
+    "hair drier": "hairdryer",
 }
 
 CONTROLNET_ANNOTATIONS = "../../coco_dataset/contextual_crops/annotations/single_instances_train.json"

@@ -119,8 +119,8 @@ QUALITY_TAGS = [
     "",
 ]
 
-_BASE_NEG = "text, letters, watermark, out of frame, cropped, logo"
+_BASE_NEG = "text, letters, person, watermark, out of frame, cropped, logo"
 NEGATIVE_PROMPTS = {
-    "toaster": f"{_BASE_NEG}, floating slots, person, hands",
-    "hair drier": f"{_BASE_NEG}, electric razor, straightener, curling iron, toothbrush, gun, drill, power tool"
+    "toaster": f"{_BASE_NEG}, floating slots, hands",
+    "hair drier": f"{_BASE_NEG}, face, straightener, curling iron, toothbrush, gun, drill, power tool"
 }
