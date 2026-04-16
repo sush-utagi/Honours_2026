@@ -16,10 +16,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 import matplotlib
-matplotlib.use("Agg")  # headless backend – no display needed
+matplotlib.use("Agg")  # headless backend no display needed
 import matplotlib.pyplot as plt
 import numpy as np
-from pycocotools.coco import COCO
 from scipy.spatial import ConvexHull, Delaunay
 from scipy.stats import wasserstein_distance
 
@@ -93,17 +92,18 @@ def _load_prompt_json(
     return filename_to_prompt, samples
 
 
-def _pair_synthetic_with_prompts(
+def _pair_synthetic_with_samples(
     synthetic_paths: List[Path],
     samples: List[dict],
-) -> Optional[List[str]]:
+) -> Optional[List[dict]]:
+    """Map each synthetic image to its full JSON-sample metadata (for init_image lookup)."""
     if len(synthetic_paths) != len(samples):
         print(
             f"[analyse] warning: {len(synthetic_paths)} images vs "
-            f"{len(samples)} JSON samples — skipping prompt-level scoring."
+            f"{len(samples)} JSON samples — skipping conditioning fidelity analysis."
         )
         return None
-    return [s.get("prompt", "") for s in samples]
+    return samples
 
 
 def _compute_metrics(scores: List[float]) -> Dict[str, float]:
@@ -132,87 +132,48 @@ def _compute_pairwise_diversity(embeddings: np.ndarray) -> Dict[str, float]:
     return {"mean": float(np.mean(dists)), "count": int(len(dists))}
 
 
-def _compute_pixel_proximity_bias(
+def _compute_conditioning_fidelity(
     synth_paths: List[Path],
-    real_paths: List[Path],
+    source_paths: List[Path],
     image_size: Tuple[int, int] = (64, 64),
 ) -> Dict[str, object]:
-    """Yoon et al. nearest-neighbour proximity ratio analysis in pixel space."""
-    import numpy as np
+    """Measure the 1-to-1 pixel-space distance between outputs and their source images."""
     from PIL import Image
-    
     def load_flat(path: Path) -> Optional[np.ndarray]:
         try:
             img = Image.open(path).convert("RGB")
             img = img.resize(image_size)
-            return np.array(img).flatten().astype(np.float32)
-        except Exception:
-            return None
-    
-    train_vecs = []
-    for p in real_paths:
-        v = load_flat(p)
-        if v is not None:
-            train_vecs.append(v)
-            
-    if len(train_vecs) < 2:
-        return {"flagged_count": 0, "flagged_fraction": float("nan"), "mean_ratio": float("nan")}
-        
-    train_matrix = np.stack(train_vecs)  # (n_train, D)
-    
-    ratios = []
-    flagged = 0
-    for p in synth_paths:
-        v = load_flat(p)
-        if v is None:
-            continue
-        dists = np.linalg.norm(train_matrix - v, axis=1)
-        sorted_dists = np.sort(dists)
-        d1, d2 = sorted_dists[0], sorted_dists[1]
-        ratio = float(d1 / (d2 + 1e-8))
-        ratios.append(ratio)
-        if ratio < (1 / 3):
-            flagged += 1
+            return np.array(img).flatten().astype(np.float32) / 255.0
+        except Exception: return None
+
+    dists = []
+    for s_p, r_p in zip(synth_paths, source_paths):
+        s_v, r_v = load_flat(s_p), load_flat(r_p)
+        if s_v is not None and r_v is not None:
+            dists.append(float(np.linalg.norm(s_v - r_v)))
             
     return {
-        "ratios": [float(r) for r in ratios],
-        "flagged_count": int(flagged),
-        "flagged_fraction": float(flagged / len(ratios)) if ratios else float("nan"),
-        "mean_ratio": float(np.mean(ratios)) if ratios else float("nan"),
-        "median_ratio": float(np.median(ratios)) if ratios else float("nan"),
+        "distances": dists,
+        "mean_dist": float(np.mean(dists)) if dists else 0,
+        "median_dist": float(np.median(dists)) if dists else 0,
     }
 
 
-def _compute_clip_proximity_bias(
+def _compute_clip_fidelity(
     synth_embeds: np.ndarray,
-    train_embeds: np.ndarray,
+    source_embeds: np.ndarray,
 ) -> Dict[str, object]:
-    """Yoon et al. nearest-neighbour proximity ratio analysis in CLIP embedding space."""
-    import numpy as np
-
-    if len(train_embeds) < 2 or len(synth_embeds) == 0:
-        return {"flagged_count": 0, "flagged_fraction": float("nan"), "mean_ratio": float("nan")}
-
-    # Cosine distance = 1 - cosine similarity (dot product for unit vectors)
-    sim_matrix = synth_embeds @ train_embeds.T
-    dists = 1 - sim_matrix
+    """Measure the 1-to-1 semantic distance between outputs and their source images."""
+    if len(synth_embeds) != len(source_embeds):
+        return {"mean_dist": float("nan"), "distances": []}
     
-    ratios = []
-    flagged = 0
-    for i in range(len(synth_embeds)):
-        sorted_dists = np.sort(dists[i])
-        d1, d2 = sorted_dists[0], sorted_dists[1]
-        ratio = float(d1 / (d2 + 1e-8))
-        ratios.append(ratio)
-        if ratio < (1 / 3):
-            flagged += 1
-            
+    # Cosine distance = 1 - dot product (assuming normalized)
+    dists = 1.0 - np.sum(synth_embeds * source_embeds, axis=1)
+    
     return {
-        "ratios": [float(r) for r in ratios],
-        "flagged_count": int(flagged),
-        "flagged_fraction": float(flagged / len(ratios)) if ratios else float("nan"),
-        "mean_ratio": float(np.mean(ratios)) if ratios else float("nan"),
-        "median_ratio": float(np.median(ratios)) if ratios else float("nan"),
+        "distances": [float(d) for d in dists],
+        "mean_dist": float(np.mean(dists)),
+        "median_dist": float(np.median(dists)),
     }
 
 
@@ -520,39 +481,37 @@ def _save_umap_plot(
     plt.close(fig)
 
 
-def _save_proximity_plot(
-    pixel_ratios: List[float],
-    clip_ratios: List[float],
+def _save_fidelity_plot(
+    pixel_dists: List[float],
+    clip_dists: List[float],
     class_name: str,
     out_path: Path,
 ) -> None:
-    """Save histograms of the NN ratios (Yoon et al. 2023)."""
+    """Save histograms showing how closely outputs followed their conditioning source."""
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(f"Proximity Bias Distribution — {class_name}", fontsize=14, fontweight="bold")
+    fig.suptitle(f"Conditioning Fidelity (Source vs Output) — {class_name}", fontsize=14, fontweight="bold")
     
-    for ax, ratios, label in zip(
+    for ax, dists, label, x_lab, x_range in zip(
         axes,
-        [pixel_ratios, clip_ratios],
-        ["Pixel Space (L2)", "CLIP Space (Cosine)"]
+        [pixel_dists, clip_dists],
+        ["Pixel Space (L2)", "CLIP Space (Cosine)"],
+        ["L2 distance (lower = more faithful)", "Cosine distance (0 = identical)"],
+        [None, (0, 1)]  # Enforce 0-1 range for CLIP, let Pixel auto-scale
     ):
-        if not ratios:
-            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha='center')
+        if not dists:
+            ax.text(0.5, 0.5, "No pairing data", transform=ax.transAxes, ha='center')
             continue
             
-        ax.hist(ratios, bins=40, range=(0, 1), color="#E8833A", alpha=0.75, edgecolor="white")
-        ax.axvline(x=1/3, color="#C62828", linestyle="--", linewidth=1.5,
-                   label=f"Bias threshold (1/3)\nFlagged: {sum(r < 0.333 for r in ratios)}/{len(ratios)}")
-        ax.set_xlabel("NN ratio (d₁ / d₂)", fontsize=11)
+        ax.hist(dists, bins=40, range=x_range, color="#50C878", alpha=0.75, edgecolor="white")
+        ax.set_xlabel(x_lab, fontsize=11)
         ax.set_ylabel("Count", fontsize=11)
-        ax.set_title(label, fontsize=12)
-        ax.legend(fontsize=9)
+        ax.set_title(f"{label} Distribution", fontsize=12)
         ax.grid(axis="y", alpha=0.3)
     
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"[analyse] saved proximity plot → {out_path}")
-    print(f"[analyse] saved UMAP plot → {out_path}")
+    print(f"[analyse] saved fidelity plot → {out_path}")
 
 
 def _save_umap_metrics(
@@ -606,19 +565,26 @@ def main() -> int:
         return 1
 
     # synthetic prompt-level scores use json
-    prompt_json_path = Path(args.prompt_json) if args.prompt_json else None
+    prompt_json_path = Path(args.prompt_json) if args.prompt_json else None    
+    if do_synth and prompt_json_path is None:
+        synth_dir = synth_root / class_name
+        if synth_dir.exists():
+            json_files = list(synth_dir.glob("*.json"))
+            if json_files:
+                prompt_json_path = json_files[0]
+                print(f"[analyse] found prompt JSON: {prompt_json_path.name}")
+
     synth_prompts: List[str] = []
 
     if do_synth and synth_paths and not args.no_prompt_level:
         if prompt_json_path is None:
-            print("[analyse] error: --prompt-json is required for synthetic image analysis.")
+            print("[analyse] error: --prompt-json is required for synthetic image analysis (could not auto-detect one).")
             return 1
         
         filename_to_prompt, json_samples = _load_prompt_json(prompt_json_path)
-        synth_prompts = _pair_synthetic_with_prompts(synth_paths, json_samples)
-        if synth_prompts is None:
-            args.no_prompt_level = True
-            synth_prompts = []
+        # Re-map prompts to match the order of synth_paths
+        for p in synth_paths:
+            synth_prompts.append(filename_to_prompt.get(p.name, ""))
 
     print(f"\n[analyse] extracting CLIP embeddings for all relevant sets …")
     
@@ -771,31 +737,74 @@ def main() -> int:
             print(f"     Real   : {real_lpips_div['mean']:.4f}  (95% CI: {real_lpips_div['ci_lower']:.4f} - {real_lpips_div['ci_upper']:.4f})")
             print(f"     Synth  : {synth_lpips_div['mean']:.4f}  (95% CI: {synth_lpips_div['ci_lower']:.4f} - {synth_lpips_div['ci_upper']:.4f})")
             
-            print("\n  => Proximity Bias (Yoon et al. mode memorisation):")
-            print("     [Pixel Space] computing …")
-            pixel_prox = _compute_pixel_proximity_bias(synth_paths, real_paths)
-            print(f"     => Flagged: {pixel_prox['flagged_count']} / {len(pixel_prox['ratios'])} ({pixel_prox['flagged_fraction']:.1%})")
-            
-            print("     [CLIP Space] computing …")
-            clip_prox = _compute_clip_proximity_bias(synth_embeds, train_embeds)
-            print(f"     => Flagged: {clip_prox['flagged_count']} / {len(clip_prox['ratios'])} ({clip_prox['flagged_fraction']:.1%})")
+            # -- Source Fidelity Analysis (Conditioning Strength) ---------------------
+            metrics_path = out_dir / "metrics_summary.json"
+            suffix = "syn"
+            if prompt_json_path:
+                fname = prompt_json_path.name.lower()
+                if "ip" in fname: suffix = "ip"
+                elif "controlnet" in fname or "cn" in fname or "canny" in fname: suffix = "cn"
+                elif "ti" in fname: suffix = "ti"
 
-            # Save proximity distribution plot
-            _save_proximity_plot(
-                pixel_prox["ratios"],
-                clip_prox["ratios"],
-                class_name,
-                out_dir / "proximity_bias_distribution.png",
-            )
+            if do_synth and synth_paths and not args.no_prompt_level:
+                _, json_samples = _load_prompt_json(prompt_json_path)
+                paired_samples = _pair_synthetic_with_samples(synth_paths, json_samples)
+                
+                if paired_samples:
+                    print("\n[analyse] computing conditioning fidelity (source vs output) …")
+                    
+            # Map source (real) image paths
+            source_paths = []
+            for s in paired_samples:
+                img_path = s.get("controlnet_image") or s.get("ip_image")
+                source_paths.append(Path(img_path) if img_path else None)
+            
+            # Filter pairs where source image exists
+            valid_synth_paths, valid_source_paths, valid_synth_embeds = [], [], []
+            for i, src_p in enumerate(source_paths):
+                if src_p and src_p.exists() and i < len(synth_embeds):
+                    valid_synth_paths.append(synth_paths[i])
+                    valid_source_paths.append(src_p)
+                    valid_synth_embeds.append(synth_embeds[i])
+            if valid_synth_paths:
+                print(f"   => extracting source CLIP embeddings for {len(valid_source_paths)} images …")
+                # 1. Pixel space
+                pixel_fid = _compute_conditioning_fidelity(valid_synth_paths, valid_source_paths)
+                
+                # 2. CLIP space
+                source_embeds_raw, _ = extract_clip_embeddings(valid_source_paths, batch_size=args.batch_size)
+                source_embeds = source_embeds_raw / np.maximum(np.linalg.norm(source_embeds_raw, axis=1, keepdims=True), 1e-8)
+                clip_fid = _compute_clip_fidelity(np.stack(valid_synth_embeds), source_embeds)
+                
+                print(f"   => Mean Fidelity: Pixel={pixel_fid['mean_dist']:.4f}, CLIP={clip_fid['mean_dist']:.4f}")
+                
+                # Plot and Save
+                _save_fidelity_plot(pixel_fid["distances"], clip_fid["distances"], class_name, out_dir / f"conditioning_fidelity_{suffix}.png")
+                
+                if metrics_path.exists():
+                    with metrics_path.open("r", encoding="utf-8") as f:
+                        metrics_data = json.load(f)
+                    if "synthetic" not in metrics_data: metrics_data["synthetic"] = {}
+                    metrics_data["synthetic"]["conditioning_fidelity"] = {
+                        "pixel": {k: v for k, v in pixel_fid.items() if k != "distances"},
+                        "clip": {k: v for k, v in clip_fid.items() if k != "distances"}
+                    }
+                    with metrics_path.open("w", encoding="utf-8") as f:
+                        json.dump(metrics_data, f, indent=2)
+                    
+                    with (out_dir / f"fidelity_distances_pixel_{suffix}.json").open("w") as f:
+                        json.dump(pixel_fid["distances"], f)
+                    with (out_dir / f"fidelity_distances_clip_{suffix}.json").open("w") as f:
+                        json.dump(clip_fid["distances"], f)
+            else:
+                print("   [analyse] skipping fidelity analysis: no valid source images found on disk.")
 
             # Append to the previously generated metrics file
-            metrics_path = out_dir / "metrics_summary.json"
             if metrics_path.exists():
                 with metrics_path.open("r", encoding="utf-8") as f:
                     metrics_data = json.load(f)
                 
                 if "real" not in metrics_data: metrics_data["real"] = {}
-                # We use explicit keys for comparison
                 metrics_data["real"]["semantic_diversity_clip"] = real_div
                 metrics_data["real"]["structural_diversity_lpips"] = real_lpips_div
                 
@@ -803,24 +812,6 @@ def main() -> int:
                 metrics_data["synthetic"]["semantic_diversity_clip"] = synth_div
                 metrics_data["synthetic"]["structural_diversity_lpips"] = synth_lpips_div
                 
-                # Proximity Analysis
-                metrics_data["synthetic"]["proximity_bias_pixel"] = {k: v for k, v in pixel_prox.items() if k != "ratios"}
-                metrics_data["synthetic"]["proximity_bias_clip"] = {k: v for k, v in clip_prox.items() if k != "ratios"}
-                
-                # Save raw ratios to separate sidecar files
-                suffix = "syn"
-                if prompt_json_path:
-                    fname = prompt_json_path.name.lower()
-                    if "ip" in fname: suffix = "ip"
-                    elif "controlnet" in fname or "cn" in fname or "canny" in fname: suffix = "cn"
-                    elif "ti" in fname: suffix = "ti"
-
-                with (out_dir / f"proximity_ratios_pixel_{suffix}.json").open("w") as f:
-                    json.dump(pixel_prox["ratios"], f)
-                with (out_dir / f"proximity_ratios_clip_{suffix}.json").open("w") as f:
-                    json.dump(clip_prox["ratios"], f)
-                
-                # Clean out the old key if it was created in a previous run
                 metrics_data["real"].pop("pairwise_diversity", None)
                 metrics_data["synthetic"].pop("pairwise_diversity", None)
                 

@@ -7,6 +7,7 @@ load_dotenv()
 import argparse
 import json
 import os
+import shutil
 import sys
 import warnings
 from dataclasses import dataclass
@@ -125,7 +126,7 @@ class EnvConfig:
     control_scale: float
 
 
-def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], list[float], list[float]]:
+def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], list[float], list[float], list[float]]:
     cfg_levels = [args.cfg_scale]
     if args.sweep_cfg:
         if args.no_cfg:
@@ -147,7 +148,13 @@ def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], 
             raise ValueError("--sweep-control-scale requires --use-canny or --use-segnet.")
         control_levels = [round(s, 1) for s in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]]
 
-    sweep_dims = [cfg_levels, step_levels, strength_levels, control_levels]
+    ip_levels = [args.ip_scale if hasattr(args, 'ip_scale') else 0.6]  # Fallback to env default if needed
+    if args.sweep_ip_scale:
+        if not args.use_ip_adapter:
+            raise ValueError("--sweep-ip-scale requires --use-ip-adapter.")
+        ip_levels = [round(s, 1) for s in [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]]
+
+    sweep_dims = [cfg_levels, step_levels, strength_levels, control_levels, ip_levels]
     sweep_counts = [len(dim) for dim in sweep_dims if len(dim) > 1]
 
     # No sweeps: just repeat single values
@@ -156,9 +163,10 @@ def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], 
         steps_schedule = step_levels * args.num_images
         strength_schedule = strength_levels * args.num_images
         control_schedule = control_levels * args.num_images
-        return cfg_schedule, steps_schedule, strength_schedule, control_schedule
+        ip_schedule = ip_levels * args.num_images
+        return cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_schedule
 
-    grid = list(product(cfg_levels, step_levels, strength_levels, control_levels))
+    grid = list(product(cfg_levels, step_levels, strength_levels, control_levels, ip_levels))
     grid_size = len(grid)
 
     if args.num_images < grid_size:
@@ -176,12 +184,13 @@ def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], 
 
     repeats = (args.num_images + grid_size - 1) // grid_size
     schedule = (grid * repeats)[: args.num_images]
-    cfg_schedule = [c for c, _, _, _ in schedule]
-    steps_schedule = [s for _, s, _, _ in schedule]
-    strength_schedule = [st for _, _, st, _ in schedule]
-    control_schedule = [cs for _, _, _, cs in schedule]
+    cfg_schedule = [c for c, _, _, _, _ in schedule]
+    steps_schedule = [s for _, s, _, _, _ in schedule]
+    strength_schedule = [st for _, _, st, _, _ in schedule]
+    control_schedule = [cs for _, _, _, cs, _ in schedule]
+    ip_schedule = [ips for _, _, _, _, ips in schedule]
 
-    return cfg_schedule, steps_schedule, strength_schedule, control_schedule
+    return cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_schedule
 
 
 def _resolve_diffusers_scheduler(config, sampler_name: str):
@@ -372,6 +381,7 @@ def _generate_with_diffusers(
     steps_schedule: list[int],
     strength_schedule: list[float],
     control_schedule: list[float],
+    ip_scale_schedule: list[float],
     seeds: list[int],
     run_outdir: Path,
     timestamp: str,
@@ -399,8 +409,8 @@ def _generate_with_diffusers(
     ip_paths = ip_images if ip_images is not None else [""] * len(prompts)
     segs = segmentations if segmentations is not None else [[]] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, seed, img_path, cn_path, ip_path, seg in zip(
-        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, seeds, img_paths, cn_paths, ip_paths, segs
+    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, ip_scale, seed, img_path, cn_path, ip_path, seg in zip(
+        prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_scale_schedule, seeds, img_paths, cn_paths, ip_paths, segs
     ):
         active_image = None if args.force_txt2img else (
             _load_image_cached(img_path) if img_path else input_image
@@ -414,6 +424,9 @@ def _generate_with_diffusers(
         generator_device = env_config.device if env_config.device in {"cuda", "mps"} else "cpu"
         generator = torch.Generator(device=generator_device).manual_seed(seed)
         guidance_scale = 9.0 if args.no_cfg else cfg_scale
+
+        if use_ip_adapter:
+            text2img.set_ip_adapter_scale(ip_scale)
 
         # SDXL compel returns (embeds, pooled) but  1.x returns just embeds
         if env_config.is_xl:
@@ -561,6 +574,8 @@ def main() -> int:
     parser.add_argument("--embeddings",nargs="*",default=[],help="Paths to textual inversion embedding folder.",)
     parser.add_argument("--force-txt2img", action="store_true",help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",)
     parser.add_argument("--use-ip-adapter", action="store_true", help="Use IP-Adapter with the specified reference images (from ip_image JSON field or --ip-image CLI flag).")
+    parser.add_argument("--ip-image", default=None, help="Path to a reference image for IP-Adapter (CLI mode).")
+    parser.add_argument("--sweep-ip-scale", action="store_true", help="Sweep IP-Adapter scale 0.1–1.0 in 0.1 increments across images (requires --use-ip-adapter).")
 
     args = parser.parse_args()
 
@@ -581,6 +596,7 @@ def main() -> int:
     outdir = Path(args.outdir) if args.outdir else (repo_root / "data_generation_outputs")
 
     init_images: list[str] | None = None
+    ip_images: list[str] | None = None
     json_embeddings: list[str] = []
 
     if args.from_json:
@@ -636,6 +652,7 @@ def main() -> int:
         init_images: list[str] = []
         controlnet_images: list[str] = []
         ip_images: list[str] = []
+        ip_scale_schedule: list[float] = []
         segmentations: list[list[list[float]]] = []
 
         for idx, sample in enumerate(samples):
@@ -653,6 +670,7 @@ def main() -> int:
             init_images.append(sample.get("init_image", ""))
             controlnet_images.append(sample.get("controlnet_image", ""))
             ip_images.append(sample.get("ip_image", ""))
+            ip_scale_schedule.append(float(sample.get("ip_scale", env_config.ip_scale)))
             segmentations.append(sample.get("segmentation", []))
 
         num_images = len(prompts)
@@ -663,7 +681,7 @@ def main() -> int:
         if args.prompt is None:
             raise ValueError("--prompt is required when not using --from-json.")
         num_images = args.num_images
-        cfg_schedule, steps_schedule, strength_schedule, control_schedule = _build_schedules(args)
+        cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_scale_schedule = _build_schedules(args)
         prompts = [args.prompt] * num_images
         negative_prompts = [args.negative_prompt] * num_images
         run_outdir = (outdir / timestamp) if num_images > 1 else outdir
@@ -674,10 +692,12 @@ def main() -> int:
         seed_base = int(torch.randint(0, 2**31 - 1, (1,)).item())
     seeds = [seed_base + i for i in range(num_images)]
 
-
-
-    # Combine embeddings from CLI and JSON (JSON first so run-specific embeddings load before global ones)
     all_embeddings = json_embeddings + [str(p) for p in args.embeddings]
+
+    if args.ip_image or (args.from_json and (generation_mode == "ip_adapter" or any(s.get("ip_image") for s in samples))):
+        if not args.use_ip_adapter:
+            print(f"[pipeline] IP-Adapter reference detected — enabling IP-Adapter automatically.")
+            args.use_ip_adapter = True
 
     if env_config.use_hg_diffusers:
         print(f"USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend ({env_config.model_id}).")
@@ -690,20 +710,27 @@ def main() -> int:
             steps_schedule=steps_schedule,
             strength_schedule=strength_schedule,
             control_schedule=control_schedule,
+            ip_scale_schedule=ip_scale_schedule,
             seeds=seeds,
             run_outdir=run_outdir,
             timestamp=timestamp,
             input_image=input_image,
             input_images=init_images,
             controlnet_images=controlnet_images if args.from_json else None,
-            ip_images=ip_images if args.from_json else None,
+            ip_images=ip_images if args.from_json else ([args.ip_image] * num_images if args.ip_image else None),
+            total_images=num_images,
             segmentations=segmentations if args.from_json else None,
             use_canny=args.use_canny,
             use_segnet=args.use_segnet,
-            control_scale=args.control_scale,
             embeddings=all_embeddings,
             use_ip_adapter=getattr(args, 'use_ip_adapter', False)
         )
+
+    if args.from_json and run_outdir:
+        json_src = Path(args.from_json)
+        json_dest = run_outdir / json_src.name
+        shutil.copy2(json_src, json_dest)
+        print(f"[pipeline] copied source prompts to {json_dest}")
 
     return 0
 
