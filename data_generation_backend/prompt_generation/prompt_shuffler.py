@@ -4,10 +4,6 @@ import random
 import argparse
 from pathlib import Path
 
-import cv2
-import numpy as np
-from tqdm import tqdm
-
 from parts_simple import (
     DEFINING_FEATURES,
     MATERIALS,
@@ -20,99 +16,33 @@ from parts_simple import (
     _BASE_NEG,
 )
 
-
-def score_edge_map(
-    image_path: str,
-    low_threshold: int = 100,
-    high_threshold: int = 200,
-) -> tuple[float, float] | tuple[None, None]:
-    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        return None, None
-    img_resized = cv2.resize(img, (512, 512))
-    edges = cv2.Canny(img_resized, low_threshold, high_threshold)
-    variance = float(np.var(edges))
-    density = float(np.mean(edges > 0))
-    return variance, density
-
-
-def is_usable_conditioning_image(
-    image_path: str,
-    min_variance: float = 100.0,
-    min_density: float = 0.01,
-    max_density: float = 0.50,
-) -> bool:
-    variance, density = score_edge_map(image_path)
-    if variance is None:
-        return False
-    return variance >= min_variance and min_density <= density <= max_density
-
-
 TARGET_CLASSES: dict[str, str] = {
     "toaster": "toaster",
     "hair drier": "hairdryer",
 }
 
-CONTROLNET_ANNOTATIONS = "../../coco_dataset/contextual_crops/annotations/single_instances_train.json"
-CONTROLNET_IMAGES_DIR = "../../coco_dataset/contextual_crops/images/train"
-
-
-def build_controlnet_candidates(
-    classes: dict[str, str],
-    annotations_path: str = CONTROLNET_ANNOTATIONS,
-    images_dir: str = CONTROLNET_IMAGES_DIR,
-) -> dict[str, list[str]]:
-    ann_path = Path(annotations_path)
-    img_dir = Path(images_dir)
-
-    if not ann_path.exists():
-        print(f"[warn] Annotations not found: {ann_path}. No ControlNet candidates.")
+def load_controlnet_candidates(classes: dict[str, str]) -> dict[str, list[str]]:
+    candidates = {}
+    script_dir = Path(__file__).resolve().parent
+    cand_dir = script_dir / "controlnet_candidates"
+    
+    if not cand_dir.exists():
+        print(f"[warn] ControlNet candidate directory not found at {cand_dir}. Run select_controlnet_candidates.py first.")
         return {cls: [] for cls in classes}
 
-    print(f"[info] Loading annotations from {ann_path} ...")
-    with open(ann_path, "r", encoding="utf-8") as f:
-        coco = json.load(f)
-
-    # Build lookups
-    id_to_filename: dict[int, str] = {img["id"]: img["file_name"] for img in coco["images"]}
-    id_to_category: dict[int, str] = {cat["id"]: cat["name"] for cat in coco["categories"]}
-
-    # category_name -> set of image_ids
-    category_to_image_ids: dict[str, set[int]] = {}
-    for ann in coco["annotations"]:
-        cat_name = id_to_category.get(ann["category_id"])
-        if cat_name is None:
-            continue
-        category_to_image_ids.setdefault(cat_name, set()).add(ann["image_id"])
-
-    candidates: dict[str, list[str]] = {}
     for cls in classes:
-        image_ids = category_to_image_ids.get(cls, set())
-        class_paths = [
-            img_dir / id_to_filename[img_id]
-            for img_id in image_ids
-            if img_id in id_to_filename and (img_dir / id_to_filename[img_id]).exists()
-        ]
-
-        passing = [
-            str(p.resolve())
-            for p in tqdm(class_paths, desc=f"Filtering {cls}", unit="img")
-            if is_usable_conditioning_image(str(p.resolve()))
-        ]
-        print(f"[info] {cls}: {len(passing)}/{len(class_paths)} crops passed edge map filter.")
-        candidates[cls] = passing
-
-    # write controlnet candidates to .txt files
-    output_dir = Path(__file__).resolve().parent / "controlnet_candidates"
-    output_dir.mkdir(parents=True, exist_ok=True)
-    for cls, paths in candidates.items():
         safe_cls = cls.replace(" ", "_")
-        txt_path = output_dir / f"{safe_cls}_candidates.txt"
-        with open(txt_path, "w", encoding="utf-8") as f:
-            for p in paths:
-                f.write(p + "\n")
-        print(f"[info] Saved candidate list for {cls} to {txt_path}")
-
+        txt_path = cand_dir / f"{safe_cls}_candidates.txt"
+        
+        if txt_path.exists():
+            with open(txt_path, "r", encoding="utf-8") as f:
+                paths = [line.strip() for line in f if line.strip()]
+            candidates[cls] = paths
+            print(f"[info] Loaded {len(paths)} ControlNet candidates for {cls}")
+        else:
+            print(f"[warn] No candidate file found for {cls} at {txt_path}")
+            candidates[cls] = []
+            
     return candidates
 
 
@@ -168,6 +98,7 @@ def sample_ip_adapter_images(cls: str, num_samples: int) -> list[str]:
     chosen = random.choices(paths, weights=probs, k=num_samples)
     return chosen
 
+
 def generate_and_save_class_jsons(
     classes: dict[str, str],
     num_per_class: int = 100,
@@ -175,21 +106,25 @@ def generate_and_save_class_jsons(
 ) -> None:
     cwd = Path.cwd()
     
+    # 0. Determine which modes to create
     modes_to_run = [mode] if mode else ["ip_adapter", "controlnet"]
 
+    # 1. Pre-fetch candidates/references for all needed modes
     all_cn_candidates = {}
     if any(m in ("controlnet", "hybrid") for m in modes_to_run):
-        all_cn_candidates = build_controlnet_candidates(classes)
+        all_cn_candidates = load_controlnet_candidates(classes)
 
     all_ip_references = {}
     if any(m in ("ip_adapter", "hybrid") for m in modes_to_run):
         for cls in classes:
             all_ip_references[cls] = sample_ip_adapter_images(cls, num_per_class)
 
+    # 2. Process each class
     for cls, target_value in classes.items():
         print(f"\n[batch] Generating consistency-locked prompts for: {cls} (using token: {target_value})")
         prompt_token = target_value
         
+        # Lock in the prompts for this class so all JSONs use identical text
         base_samples = []
         for _ in range(num_per_class):
             base_samples.append({
@@ -198,11 +133,14 @@ def generate_and_save_class_jsons(
                 "cfg_scale": round(random.uniform(5.0, 9.0), 1),
             })
 
+        # 3. Create a separate JSON for each target mode
         for current_mode in modes_to_run:
             samples = []
             cn_valid_count = 0
             for i, base in enumerate(base_samples):
                 sample = base.copy()
+                
+                # Insert ControlNet source if mode requires it
                 if current_mode in ("controlnet", "hybrid"):
                     cls_cands = all_cn_candidates.get(cls, [])
                     if cls_cands:
@@ -211,6 +149,7 @@ def generate_and_save_class_jsons(
                     else:
                         sample["controlnet_image"] = ""
                 
+                # Insert IP-Adapter source if mode requires it
                 if current_mode in ("ip_adapter", "hybrid"):
                     sample["ip_image"] = all_ip_references[cls][i]
                 
@@ -236,6 +175,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate image prompts for specific COCO classes.")
     parser.add_argument("-n", type=int, default=10, help="Number of prompts to generate per class (default: 10).")
     parser.add_argument("--mode", choices=["ip_adapter", "controlnet", "hybrid"], default=None, 
-                        help="Generation mode. Default=None (generates both ip_adapter and controlnet with identical prompts).")
+                        help="Generation mode. Omit to generate both ip_adapter and controlnet JSONs with identical prompts.")
     args = parser.parse_args()
     generate_and_save_class_jsons(TARGET_CLASSES, num_per_class=args.n, mode=args.mode)

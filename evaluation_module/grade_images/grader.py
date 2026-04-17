@@ -40,6 +40,7 @@ def _load_image(path: Path) -> Image.Image | None:
     try:
         img = Image.open(path).convert("RGB")
         img.load()
+        if not img.getbbox(): return None
         return img
     except Exception as exc:
         warnings.warn(f"[clip-grader] skipping unreadable image {path}: {exc}")

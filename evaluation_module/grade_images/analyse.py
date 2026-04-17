@@ -59,16 +59,6 @@ def _collect_real_paths(
     return paths
 
 
-def _collect_synthetic_paths(
-    class_name: str,
-    synthetic_root: Path,
-) -> List[Path]:
-    """Glob all images under ``data_genertation_backend/{class_name}/``."""
-    synth_dir = synthetic_root / class_name
-    if not synth_dir.exists(): raise FileNotFoundError(f"Synthetic directory not found: {synth_dir}")
-    paths = sorted(p for p in synth_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".jpg", ".png"})
-    print(f"[analyse] found {len(paths):,} synthetic images in {synth_dir}")
-    return paths
 
 
 def _load_prompt_json(
@@ -530,49 +520,62 @@ def _save_umap_metrics(
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="CLIP score analysis for real vs synthetic images.",formatter_class=argparse.RawDescriptionHelpFormatter,)
-    parser.add_argument("--class-name", required=True,help="COCO category name (e.g. 'toaster', 'hair drier').",)
-    parser.add_argument("--source", choices=["real", "synthetic", "both"], default="both",help="Which image source(s) to grade (default: both).",)
-    parser.add_argument("--real-dir", default=None,help="Root of contextual crops (default: coco_dataset/contextual_crops).",)
-    parser.add_argument("--synthetic-dir", default=None,help="Root of synthetic outputs (default: data_generation_outputs).",)
-    parser.add_argument("--prompt-json", default=None,help="Path to the prompt JSON used for generation (required for prompt-level scoring).",)
-    parser.add_argument("--batch-size", type=int, default=32,help="CLIP inference batch size (default: 32).",)
-    parser.add_argument("--max-real", type=int, default=None,help="Cap the number of real images to grade (useful for huge classes).",)
-    parser.add_argument("--no-prompt-level", action="store_true",help="Skip prompt-level CLIP scoring for synthetic images (domain-level only).",)
-    parser.add_argument("--no-umap", action="store_true",help="Skip UMAP distributional visualization.",)
-    parser.add_argument("--max-val", type=int, default=None,help="Cap the number of real validation images for UMAP.",)
-    parser.add_argument("--umap-neighbors", type=int, default=15,help="UMAP n_neighbors parameter (default: 15).",)
-    parser.add_argument("--umap-min-dist", type=float, default=0.2,help="UMAP min_dist parameter (default: 0.2).",)
-
+    parser.add_argument("--class-name", default=None, help="Inferred from --synthetic-dir if omitted.")
+    parser.add_argument("--source", choices=["real", "synthetic", "both"], default="both")
+    parser.add_argument("--real-dir", default=None)
+    parser.add_argument("--synthetic-dir", default=None, help="Path to specific run folder (e.g. data_generation_outputs/toaster_100_ip)")
+    parser.add_argument("--prompt-json", default=None)
+    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--max-real", type=int, default=None)
+    parser.add_argument("--no-prompt-level", action="store_true")
+    parser.add_argument("--no-umap", action="store_true")
+    parser.add_argument("--max-val", type=int, default=None)
+    parser.add_argument("--umap-neighbors", type=int, default=15)
+    parser.add_argument("--umap-min-dist", type=float, default=0.2)
     args = parser.parse_args()
 
     repo_root = _repo_root()
-    class_name: str = args.class_name
+    synth_dir: Optional[Path] = None
+    inferred_class = args.class_name
+    
+    if args.synthetic_dir:
+        synth_dir = Path(args.synthetic_dir)
+        if not inferred_class:
+            # e.g. "hair_drier_100_ip" -> split[0] is "hair", but we want "hair drier"
+            # Hardcode or detect the underscore pattern
+            folder_parts = synth_dir.name.split('_')
+            if folder_parts[0] == "hair" and folder_parts[1] == "drier":
+                inferred_class = "hair drier"
+            else:
+                inferred_class = folder_parts[0]
+            print(f"[analyse] inferred class '{inferred_class}' from folder '{synth_dir.name}'")
 
+    if not inferred_class:
+        print("[analyse] error: must provide --class_name or --synthetic_dir pointing to a run folder.")
+        return 1
+
+    class_name = inferred_class
     real_root = Path(args.real_dir) if args.real_dir else repo_root / "coco_dataset" / "contextual_crops"
-    synth_root = Path(args.synthetic_dir) if args.synthetic_dir else repo_root / "data_generation_outputs"
-
     do_real = args.source in ("real", "both")
     do_synth = args.source in ("synthetic", "both")
-
     real_paths: List[Path] = []
     synth_paths: List[Path] = []
 
     if do_real: real_paths = _collect_real_paths(class_name, real_root, max_images=args.max_real)
-    if do_synth: synth_paths = _collect_synthetic_paths(class_name, synth_root)
-
-    if not real_paths and not synth_paths:
-        print("[analyse] no images found to grade — nothing to do.")
-        return 1
+    if do_synth:
+        if not synth_dir or not synth_dir.exists():
+            print(f"[analyse] error: synthetic directory not found: {args.synthetic_dir}")
+            return 1
+        synth_paths = sorted(p for p in synth_dir.rglob("*") if p.is_file() and p.suffix.lower() in {".jpg", ".png"})
+        print(f"[analyse] found {len(synth_paths):,} synthetic images in {synth_dir}")
 
     # synthetic prompt-level scores use json
     prompt_json_path = Path(args.prompt_json) if args.prompt_json else None    
-    if do_synth and prompt_json_path is None:
-        synth_dir = synth_root / class_name
-        if synth_dir.exists():
-            json_files = list(synth_dir.glob("*.json"))
-            if json_files:
-                prompt_json_path = json_files[0]
-                print(f"[analyse] found prompt JSON: {prompt_json_path.name}")
+    if do_synth and prompt_json_path is None and synth_dir:
+        json_files = list(synth_dir.glob("*.json"))
+        if json_files:
+            prompt_json_path = json_files[0]
+            print(f"[analyse] found prompt JSON in output folder: {prompt_json_path.name}")
 
     synth_prompts: List[str] = []
 
