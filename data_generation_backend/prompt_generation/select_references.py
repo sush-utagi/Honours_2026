@@ -29,16 +29,14 @@ def main():
     parser.add_argument("--output_dir", type=str, default=".", help="Output directory for selected images.")
     parser.add_argument("--classes", type=str, nargs="+", default=["toaster", "hair drier"], help="Optional: filter by class (e.g. 'toaster' 'hair drier') if image_dir is contextual_crops root.")
     parser.add_argument("--k", type=int, default=7, help="Number of clusters (selected images) per group.")
+    parser.add_argument("--visualise", action="store_true", help="Generate a PCA scatter plot of the clusters.")
     args = parser.parse_args()
 
     image_dir = Path(args.image_dir)
     exts = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 
-    # 1. Load image paths
-    # 1. Load image paths
     paths_by_class = {}
     
-    # If classes are specified, use the assembler to safely grab ONLY those classes
     if args.classes:
         print(f"Filtering {image_dir} for classes: {args.classes} using Dataset Assembler...")
         assembler = HybridDatasetAssembler(contextual_root=str(image_dir))
@@ -86,16 +84,45 @@ def main():
         # L2 normalize centroids to compute cosine similarity correctly
         centroids_norm = centroids / np.linalg.norm(centroids, axis=1, keepdims=True)
 
-        # 4. Find highest cosine similarity per cluster
-        print("Finding best representative images...")
-        similarities = np.dot(embeddings, centroids_norm.T)
-        best_indices = np.argmax(similarities, axis=0)
-
+        # 4. Optional: Visualise Clusters
         # Output paths for this class
         # Spaces in class name replaced by underscore for safety
         safe_cls_name = cls_name.replace(" ", "_")
         cls_output_dir = base_output_dir / safe_cls_name
         cls_output_dir.mkdir(parents=True, exist_ok=True)
+
+        if args.visualise:
+            from sklearn.decomposition import PCA
+            import matplotlib.pyplot as plt
+            
+            print("Generating cluster visualization (PCA)...")
+            pca = PCA(n_components=2)
+            reduced = pca.fit_transform(embeddings)
+            
+            plt.figure(figsize=(10, 8))
+            # Define colors for clusters
+            scatter = plt.scatter(reduced[:, 0], reduced[:, 1], c=kmeans.labels_, cmap='tab10', alpha=0.6, s=15)
+            plt.colorbar(scatter, label='Cluster Index')
+            
+            # Project centroids as well
+            centroids_2d = pca.transform(centroids)
+            plt.scatter(centroids_2d[:, 0], centroids_2d[:, 1], c='red', marker='x', s=100, label='Centroids')
+            
+            plt.title(f"K-Means Clusters (K={args.k}) for {cls_name}\nInertia: {kmeans.inertia_:.2f}")
+            plt.xlabel("PCA 1")
+            plt.ylabel("PCA 2")
+            plt.legend()
+            
+            viz_path = cls_output_dir / "cluster_visualization.png"
+            plt.savefig(viz_path, dpi=150)
+            plt.close()
+            print(f"↳ Saved cluster visualization to {viz_path}")
+
+        # 5. Find highest cosine similarity per cluster
+        print("Finding best representative images...")
+        similarities = np.dot(embeddings, centroids_norm.T)
+        best_indices = np.argmax(similarities, axis=0)
+
         metadata = []
 
         # 5 & 6. Copy files and log metadata

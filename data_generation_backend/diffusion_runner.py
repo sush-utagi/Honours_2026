@@ -158,29 +158,17 @@ def _build_schedules(args: argparse.Namespace) -> tuple[list[float], list[int], 
     sweep_counts = [len(dim) for dim in sweep_dims if len(dim) > 1]
 
     # No sweeps: just repeat single values
-    if not sweep_counts:
-        cfg_schedule = cfg_levels * args.num_images
-        steps_schedule = step_levels * args.num_images
-        strength_schedule = strength_levels * args.num_images
-        control_schedule = control_levels * args.num_images
-        ip_schedule = ip_levels * args.num_images
-        return cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_schedule
-
     grid = list(product(cfg_levels, step_levels, strength_levels, control_levels, ip_levels))
     grid_size = len(grid)
 
+    # Automatically adjust num_images to fit the sweep if not specified or too small
     if args.num_images < grid_size:
-        sweep_flags = []
-        if len(cfg_levels) > 1:
-            sweep_flags.append("--sweep-cfg")
-        if len(step_levels) > 1:
-            sweep_flags.append("--sweep-num-steps")
-        if len(strength_levels) > 1:
-            sweep_flags.append("--sweep-strength")
-        if len(control_levels) > 1:
-            sweep_flags.append("--sweep-control-scale")
-        joined = " and ".join(sweep_flags)
-        raise ValueError(f"{joined} together require at least {grid_size} images to cover all combinations once.")
+        is_sweep = any([args.sweep_cfg, args.sweep_num_steps, args.sweep_strength, args.sweep_control_scale, args.sweep_ip_scale])
+        if is_sweep:
+            args.num_images = grid_size
+        else:
+            # Just repeat the single values if no sweep
+            args.num_images = max(args.num_images, 1)
 
     repeats = (args.num_images + grid_size - 1) // grid_size
     schedule = (grid * repeats)[: args.num_images]
@@ -322,7 +310,6 @@ def _prepare_diffusers_pipelines(
             weight_name=env_config.ip_weight_name
         )
         text2img.set_ip_adapter_scale(env_config.ip_scale)
-        print(f"[pipeline] loaded IP-Adapter with scale {env_config.ip_scale}")
 
     # cast the fully assembled pipeline to the device
     text2img = text2img.to(env_config.device)
@@ -409,9 +396,9 @@ def _generate_with_diffusers(
     ip_paths = ip_images if ip_images is not None else [""] * len(prompts)
     segs = segmentations if segmentations is not None else [[]] * len(prompts)
 
-    for prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, ip_scale, seed, img_path, cn_path, ip_path, seg in zip(
+    for i, (prompt, neg_prompt, cfg_scale, n_steps, strength, control_scale, ip_scale, seed, img_path, cn_path, ip_path, seg) in enumerate(zip(
         prompts, negative_prompts, cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_scale_schedule, seeds, img_paths, cn_paths, ip_paths, segs
-    ):
+    )):
         active_image = None if args.force_txt2img else (
             _load_image_cached(img_path) if img_path else input_image
         )
@@ -427,6 +414,8 @@ def _generate_with_diffusers(
 
         if use_ip_adapter:
             text2img.set_ip_adapter_scale(ip_scale)
+        
+        print(f"[pipeline] Generating {i+1}/{len(prompts)}: cfg={cfg_scale}, steps={n_steps}, ips={ip_scale}, cs={control_scale}")
 
         # SDXL compel returns (embeds, pooled) but  1.x returns just embeds
         if env_config.is_xl:
@@ -516,7 +505,8 @@ def _generate_with_diffusers(
         steps_suffix = f"steps{n_steps}"
         strength_suffix = f"str{strength:.1f}"
         control_suffix = f"cs{control_scale:.1f}"
-        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}.png"
+        ip_scale_suffix = f"ips{ip_scale:.1f}"
+        outpath = run_outdir / f"{timestamp}_{seed_suffix}_{cfg_suffix}_{steps_suffix}_{strength_suffix}_{control_suffix}_{ip_scale_suffix}.png"
         image.save(outpath)
         print(f"Wrote {outpath}")
 
@@ -599,6 +589,16 @@ def main() -> int:
     ip_images: list[str] | None = None
     json_embeddings: list[str] = []
 
+    if args.ip_image or args.sweep_ip_scale:
+        if not args.use_ip_adapter:
+            print(f"[pipeline] Enabling IP-Adapter.")
+            args.use_ip_adapter = True
+
+    if args.sweep_control_scale:
+        if not args.use_canny:
+            print(f"[pipeline] Enabling Canny ControlNet.")
+            args.use_canny = True
+
     if args.from_json:
         if args.sweep_cfg or args.sweep_num_steps or args.sweep_strength or args.sweep_control_scale:
             raise ValueError("--from-json cannot be combined with sweep flags.")
@@ -611,6 +611,11 @@ def main() -> int:
         samples = data.get("samples")
         embedding_path = data.get("embedding_path")
         generation_mode = data.get("generation_mode", "ti")
+
+        if generation_mode == "ip_adapter" or any(s.get("ip_image") for s in samples):
+            if not args.use_ip_adapter:
+                print(f"[pipeline] JSON IP-Adapter found. Enabling IP-Adapter automatically.")
+                args.use_ip_adapter = True
 
         if not coco_class or not isinstance(coco_class, str):
             raise ValueError("JSON must include string field 'coco_class'.")
@@ -674,14 +679,16 @@ def main() -> int:
             segmentations.append(sample.get("segmentation", []))
 
         num_images = len(prompts)
-        outdir = outdir / coco_class
-        run_outdir = outdir
+        mode_label = "cn" if generation_mode == "controlnet" else ("ip" if generation_mode == "ip_adapter" else generation_mode)
+        folder_name = f"{coco_class.replace(' ', '_')}_{num_images}_{mode_label}"
+        run_outdir = outdir / folder_name
         run_outdir.mkdir(parents=True, exist_ok=True)
     else:
         if args.prompt is None:
             raise ValueError("--prompt is required when not using --from-json.")
         num_images = args.num_images
         cfg_schedule, steps_schedule, strength_schedule, control_schedule, ip_scale_schedule = _build_schedules(args)
+        num_images = args.num_images
         prompts = [args.prompt] * num_images
         negative_prompts = [args.negative_prompt] * num_images
         run_outdir = (outdir / timestamp) if num_images > 1 else outdir
@@ -693,12 +700,6 @@ def main() -> int:
     seeds = [seed_base + i for i in range(num_images)]
 
     all_embeddings = json_embeddings + [str(p) for p in args.embeddings]
-
-    if args.ip_image or (args.from_json and (generation_mode == "ip_adapter" or any(s.get("ip_image") for s in samples))):
-        if not args.use_ip_adapter:
-            print(f"[pipeline] IP-Adapter reference detected — enabling IP-Adapter automatically.")
-            args.use_ip_adapter = True
-
     if env_config.use_hg_diffusers:
         print(f"USE_HG_DIFFUSERS=true -> using Hugging Face diffusers backend ({env_config.model_id}).")
         _generate_with_diffusers(
@@ -718,7 +719,6 @@ def main() -> int:
             input_images=init_images,
             controlnet_images=controlnet_images if args.from_json else None,
             ip_images=ip_images if args.from_json else ([args.ip_image] * num_images if args.ip_image else None),
-            total_images=num_images,
             segmentations=segmentations if args.from_json else None,
             use_canny=args.use_canny,
             use_segnet=args.use_segnet,

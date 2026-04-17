@@ -102,8 +102,18 @@ def build_controlnet_candidates(
         print(f"[info] {cls}: {len(passing)}/{len(class_paths)} crops passed edge map filter.")
         candidates[cls] = passing
 
-    return candidates
+    # write controlnet candidates to .txt files
+    output_dir = Path(__file__).resolve().parent / "controlnet_candidates"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for cls, paths in candidates.items():
+        safe_cls = cls.replace(" ", "_")
+        txt_path = output_dir / f"{safe_cls}_candidates.txt"
+        with open(txt_path, "w", encoding="utf-8") as f:
+            for p in paths:
+                f.write(p + "\n")
+        print(f"[info] Saved candidate list for {cls} to {txt_path}")
 
+    return candidates
 
 
 def build_prompt(cls: str, placeholder: str) -> str:
@@ -161,69 +171,71 @@ def sample_ip_adapter_images(cls: str, num_samples: int) -> list[str]:
 def generate_and_save_class_jsons(
     classes: dict[str, str],
     num_per_class: int = 100,
-    mode: str = "ip_adapter",
+    mode: str | None = None,
 ) -> None:
     cwd = Path.cwd()
+    
+    modes_to_run = [mode] if mode else ["ip_adapter", "controlnet"]
 
-    # Build ControlNet candidates once if needed
-    candidates: dict[str, list[str]] = {}
-    if mode in ("controlnet", "hybrid"):
-        candidates = build_controlnet_candidates(classes)
-        
-    ip_images_dict: dict[str, list[str]] = {}
-    if mode in ("ip_adapter", "hybrid"):
+    all_cn_candidates = {}
+    if any(m in ("controlnet", "hybrid") for m in modes_to_run):
+        all_cn_candidates = build_controlnet_candidates(classes)
+
+    all_ip_references = {}
+    if any(m in ("ip_adapter", "hybrid") for m in modes_to_run):
         for cls in classes:
-            ip_images_dict[cls] = sample_ip_adapter_images(cls, num_per_class)
+            all_ip_references[cls] = sample_ip_adapter_images(cls, num_per_class)
 
-    for cls, _ in classes.items():
-        warned_empty = False
-        controlnet_valid_count = 0
-        prompt_token = cls
-
-        samples = []
-        for i in range(num_per_class):
-            sample: dict = {
+    for cls, target_value in classes.items():
+        print(f"\n[batch] Generating consistency-locked prompts for: {cls} (using token: {target_value})")
+        prompt_token = target_value
+        
+        base_samples = []
+        for _ in range(num_per_class):
+            base_samples.append({
                 "prompt": build_prompt(cls, prompt_token),
                 "negative_prompt": NEGATIVE_PROMPTS.get(cls, _BASE_NEG),
                 "cfg_scale": round(random.uniform(5.0, 9.0), 1),
+            })
+
+        for current_mode in modes_to_run:
+            samples = []
+            cn_valid_count = 0
+            for i, base in enumerate(base_samples):
+                sample = base.copy()
+                if current_mode in ("controlnet", "hybrid"):
+                    cls_cands = all_cn_candidates.get(cls, [])
+                    if cls_cands:
+                        sample["controlnet_image"] = random.choice(cls_cands)
+                        cn_valid_count += 1
+                    else:
+                        sample["controlnet_image"] = ""
+                
+                if current_mode in ("ip_adapter", "hybrid"):
+                    sample["ip_image"] = all_ip_references[cls][i]
+                
+                samples.append(sample)
+
+            final_data = {
+                "coco_class": cls,
+                "generation_mode": current_mode,
+                "samples": samples,
             }
 
-            if mode in ("controlnet", "hybrid"):
-                cls_candidates = candidates.get(cls, [])
-                if cls_candidates:
-                    sample["controlnet_image"] = random.choice(cls_candidates)
-                    controlnet_valid_count += 1
-                else:
-                    sample["controlnet_image"] = ""
-                    if not warned_empty:
-                        print(f"[warn] No valid ControlNet conditioning images for class '{cls}'. All samples will have empty controlnet_image.")
-                        warned_empty = True
-            
-            if mode in ("ip_adapter", "hybrid"):
-                sample["ip_image"] = ip_images_dict[cls][i]
+            filename = f"{cls.replace(' ', '_')}_{current_mode}_prompts.json"
+            with open(cwd / filename, "w", encoding="utf-8") as f:
+                json.dump(final_data, f, indent=4)
 
-            samples.append(sample)
-
-        final_data = {
-            "coco_class": cls,
-            "generation_mode": mode,
-            "samples": samples,
-        }
-
-        filename = f"{cls.replace(' ', '_')}_{mode}_prompts.json"
-        with open(cwd / filename, "w", encoding="utf-8") as f:
-            json.dump(final_data, f, indent=4)
-
-        if mode in ("controlnet", "hybrid"):
-            empty_count = num_per_class - controlnet_valid_count
-            print(f"[done] Saved {filename} with {num_per_class} samples (mode={mode}, {controlnet_valid_count} with conditioning image, {empty_count} empty).")
-        else:
-            print(f"[done] Saved {filename} with {num_per_class} samples (mode={mode}).")
+            log_msg = f"[done] Saved {filename} ({num_per_class} samples)"
+            if current_mode in ("controlnet", "hybrid"):
+                log_msg += f" [{cn_valid_count} with source images]"
+            print(log_msg)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate image prompts for specific COCO classes.")
     parser.add_argument("-n", type=int, default=10, help="Number of prompts to generate per class (default: 10).")
-    parser.add_argument("--mode", choices=["ip_adapter", "controlnet", "hybrid"], default="ip_adapter", help="Generation mode: 'ip_adapter', 'controlnet', or 'hybrid' (default: ip_adapter).")
+    parser.add_argument("--mode", choices=["ip_adapter", "controlnet", "hybrid"], default=None, 
+                        help="Generation mode. Default=None (generates both ip_adapter and controlnet with identical prompts).")
     args = parser.parse_args()
     generate_and_save_class_jsons(TARGET_CLASSES, num_per_class=args.n, mode=args.mode)
