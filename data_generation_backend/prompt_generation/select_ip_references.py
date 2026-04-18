@@ -20,7 +20,7 @@ import numpy as np
 from sklearn.cluster import KMeans
 
 # We reuse the robust CLIP evaluator we already built!
-from evaluation_module.grade_images.grader import extract_clip_embeddings
+from experiments.evaluation_module.grade_images.grader import extract_clip_embeddings
 from dataset_creation.dataset_assembler import HybridDatasetAssembler
 
 def main():

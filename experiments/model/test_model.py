@@ -31,7 +31,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
 from dataset_creation.dataset_assembler import HybridDatasetAssembler, _pil_to_tensor_512  # noqa: E402
-from evaluation_module.classifier.resnet_classifier import build_resnet18  # noqa: E402
+from experiments.evaluation_module.classifier.resnet_classifier import build_resnet18  # noqa: E402
 
 DEFAULT_VAL_DIR = PROJECT_ROOT / "coco_dataset" / "contextual_crops" / "images" / "val"
 DEFAULT_VAL_ANN = PROJECT_ROOT / "coco_dataset" / "contextual_crops" / "annotations" / "single_instances_val.json"

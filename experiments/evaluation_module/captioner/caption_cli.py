@@ -20,7 +20,7 @@ from transformers import pipeline
 from dotenv import load_dotenv
 
 # Load environment from project root (.env) so HF caches respect HF_HOME / TRANSFORMERS_CACHE
-ENV_ROOT = Path(__file__).resolve().parents[2] / ".env"
+ENV_ROOT = Path(__file__).resolve().parents[3] / ".env"
 if ENV_ROOT.exists():
     load_dotenv(ENV_ROOT)
 

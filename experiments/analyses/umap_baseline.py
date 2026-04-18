@@ -38,7 +38,7 @@ from tqdm import tqdm
 ROOT = Path(__file__).resolve().parents[2]  # …/Honours_2026
 sys.path.insert(0, str(ROOT))
 
-from evaluation_module.classifier.resnet_classifier import build_resnet18
+from experiments.evaluation_module.classifier.resnet_classifier import build_resnet18
 
 # ── MPS environment hints ─────────────────────────────────────────────────
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")

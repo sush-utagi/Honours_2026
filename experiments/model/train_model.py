@@ -42,7 +42,7 @@ def resolve_project_path(path_like: str | Path) -> Path:
 
 
 from dataset_creation.dataset_assembler import HybridDatasetAssembler
-from evaluation_module.classifier.resnet_classifier import (
+from experiments.evaluation_module.classifier.resnet_classifier import (
     build_resnet18,
     train_model,
     evaluate,
