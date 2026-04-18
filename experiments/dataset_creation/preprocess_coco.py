@@ -2,7 +2,7 @@
 
 USE WITH: 
 
-python dataset_creation/preprocess_coco.py --stratify-train-to-val --val-ratio-from-train 0.1
+python experiments/dataset_creation/preprocess_coco.py --stratify-train-to-val --val-ratio-from-train 0.1
 
 
 """

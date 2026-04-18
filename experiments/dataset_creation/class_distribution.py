@@ -17,7 +17,7 @@ import matplotlib
 matplotlib.use("Agg")  # safe default; switch to interactive if desired
 import matplotlib.pyplot as plt
 
-CONTEXT_ROOT = Path(__file__).resolve().parents[1] / "coco_dataset" / "contextual_crops"
+CONTEXT_ROOT = Path(__file__).resolve().parents[2] / "coco_dataset" / "contextual_crops"
 ANN_DIR = CONTEXT_ROOT / "annotations"
 SPLITS = ["train", "val", "test"]
 

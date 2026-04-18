@@ -30,7 +30,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from dataset_creation.dataset_assembler import HybridDatasetAssembler, _pil_to_tensor_512  # noqa: E402
+from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler, _pil_to_tensor_512  # noqa: E402
 from experiments.evaluation_module.classifier.resnet_classifier import build_resnet18  # noqa: E402
 
 DEFAULT_VAL_DIR = PROJECT_ROOT / "coco_dataset" / "contextual_crops" / "images" / "val"
@@ -78,7 +78,7 @@ def load_class_names() -> List[str]:
 
 def load_val_labels(split: str) -> Dict[str, int]:
     """Map image file_name -> label_idx using dataset assembler."""
-    from dataset_creation.dataset_assembler import HybridDatasetAssembler
+    from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler
     
     assembler = HybridDatasetAssembler(contextual_root=str(PROJECT_ROOT / "coco_dataset" / "contextual_crops"))
     return assembler.get_image_to_label_mapping(split)

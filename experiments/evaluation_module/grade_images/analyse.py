@@ -49,7 +49,7 @@ def _collect_real_paths(
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
         
-    from dataset_creation.dataset_assembler import HybridDatasetAssembler
+    from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler
     
     print(f"[analyse] finding {split} images for class '{class_name}' using HybridDatasetAssembler …")
     assembler = HybridDatasetAssembler(contextual_root=str(contextual_root))

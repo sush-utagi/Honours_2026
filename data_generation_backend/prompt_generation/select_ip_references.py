@@ -21,7 +21,7 @@ from sklearn.cluster import KMeans
 
 # We reuse the robust CLIP evaluator we already built!
 from experiments.evaluation_module.grade_images.grader import extract_clip_embeddings
-from dataset_creation.dataset_assembler import HybridDatasetAssembler
+from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler
 
 def main():
     parser = argparse.ArgumentParser(description="Select reference images using CLIP + KMeans.")

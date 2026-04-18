@@ -122,7 +122,7 @@ def collect_images_for_split(
     ROOT = Path(__file__).resolve().parents[2]
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from dataset_creation.dataset_assembler import HybridDatasetAssembler
+    from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler
     
     assembler = HybridDatasetAssembler(contextual_root=str(contextual_root), seed=seed)
     paths_by_class = assembler.get_image_paths_by_class(

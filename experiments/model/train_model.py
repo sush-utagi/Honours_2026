@@ -41,7 +41,7 @@ def resolve_project_path(path_like: str | Path) -> Path:
     return path if path.is_absolute() else PROJECT_ROOT / path
 
 
-from dataset_creation.dataset_assembler import HybridDatasetAssembler
+from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler
 from experiments.evaluation_module.classifier.resnet_classifier import (
     build_resnet18,
     train_model,
