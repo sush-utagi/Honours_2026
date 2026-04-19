@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""
-# Step 1 (once per class): calibrate
-python -m experiments.evaluation_module.grade_images.analyse \
-    --class-name toaster --source real --calibrate-tau
-
-# Step 2 (every run): analyse — τ auto-detected
-python -m experiments.evaluation_module.grade_images.analyse \
-    --class-name toaster --source both --synthetic-dir data_generation_outputs/toaster_100_ip
-"""
 
 from __future__ import annotations
 
@@ -17,8 +8,11 @@ import json
 import math
 import random
 import sys
+import torch
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from PIL import Image
+from torchvision import transforms
 
 import matplotlib
 matplotlib.use("Agg")  # headless backend no display needed
@@ -44,7 +38,6 @@ def _collect_real_paths(
     split: str = "train",
     max_images: Optional[int] = None,
 ) -> List[Path]:
-    import sys
     ROOT = Path(__file__).resolve().parents[4]
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
@@ -62,8 +55,6 @@ def _collect_real_paths(
     paths = paths_dict.get(class_name, [])
     print(f"[analyse] found {len(paths):,} {split} images for class '{class_name}'")
     return paths
-
-
 
 
 def _load_prompt_json(
@@ -133,7 +124,6 @@ def _compute_conditioning_fidelity(
     image_size: Tuple[int, int] = (64, 64),
 ) -> Dict[str, object]:
     """Measure the 1-to-1 pixel-space distance (RMSE) between outputs and their sources."""
-    from PIL import Image
     num_elements = image_size[0] * image_size[1] * 3
     
     def load_flat(path: Path) -> Optional[np.ndarray]:
@@ -186,9 +176,8 @@ def _compute_memorization_ratio_pixel(
     """Compute R(x_syn) = d(x_syn, x_src) / d(x_syn, x_src⊥) in pixel space.
 
     x_src⊥ is the nearest training-set image that is NOT the source.
-    R ≪ 1 → memorization, R ≈ 1 → meaningful transformation, R > 1 → mode drift.
+    R ≪ 1 -> memorization, R ≈ 1 -> meaningful transformation, R > 1 -> potential mode drift.
     """
-    from PIL import Image
 
     def _load_flat(path: Path) -> Optional[np.ndarray]:
         try:
@@ -199,7 +188,7 @@ def _compute_memorization_ratio_pixel(
 
     num_elements = image_size[0] * image_size[1] * 3
 
-    # Pre-load a subsample of training images as distractor pool
+    # Pre-load a subsample of training images as x_src⊥ pool
     max_pool = min(len(train_paths), 500)
     pool_indices = random.sample(range(len(train_paths)), max_pool) if len(train_paths) > max_pool else list(range(len(train_paths)))
     pool_vecs: List[Tuple[Path, np.ndarray]] = []
@@ -255,7 +244,7 @@ def _compute_memorization_ratio_clip(
 
     x_src⊥ is the nearest training-set image that is NOT the source.
     All embeddings must be L2-normalised so dot product = cosine similarity.
-    R ≪ 1 → memorization, R ≈ 1 → meaningful transformation, R > 1 → mode drift.
+    R ≪ 1 -> memorization, R ≈ 1 -> meaningful transformation, R > 1 -> mode drift.
     """
     n = len(synth_embeds)
     if n == 0 or len(source_embeds) != n:
@@ -295,145 +284,21 @@ def _compute_memorization_ratio_clip(
     }
 
 
-def _calibrate_memorization_tau(
-    train_paths: List[Path],
-    train_embeds: np.ndarray,
-    n_pairs: int = 200,
-    image_size: Tuple[int, int] = (64, 64),
-    batch_size: int = 32,
-) -> Dict[str, object]:
-    """Build a null distribution of R from known-good augmented pairs.
-
-    Creates colour-jittered versions of training images (definitionally
-    *not* memorised, just transformed) and computes R for each pair.
-    The 5th percentile of this null distribution is a principled τ.
-    """
-    from PIL import Image
-    from torchvision import transforms
-    import tempfile, shutil
-
-    print(f"[calibrate] building null distribution from {n_pairs} augmented pairs …")
-
-    # --- set up augmentation (colour jitter + mild geometric) ----------------
-    aug = transforms.Compose([
-        transforms.RandomResizedCrop(512, scale=(0.85, 1.0)),
-        transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.05),
-        transforms.RandomHorizontalFlip(p=0.5),
-    ])
-
-    # Choose source images
-    pool = list(range(len(train_paths)))
-    if len(pool) > n_pairs:
-        chosen = random.sample(pool, n_pairs)
-    else:
-        chosen = pool
-
-    # Create temp dir for augmented images
-    repo_root = _repo_root()
-    tmp_dir = repo_root / ".cache" / "tau_calibration_tmp"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
-
-    aug_paths: List[Path] = []
-    src_paths: List[Path] = []
-    src_indices: List[int] = []  # index into train_embeds
-
-    for idx in chosen:
-        try:
-            img = Image.open(train_paths[idx]).convert("RGB")
-            aug_img = aug(img)
-            out_p = tmp_dir / f"aug_{idx}.png"
-            aug_img.save(out_p)
-            aug_paths.append(out_p)
-            src_paths.append(train_paths[idx])
-            src_indices.append(idx)
-        except Exception:
-            continue
-
-    if len(aug_paths) < 5:
-        print("[calibrate] error: too few valid augmented pairs.")
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return {}
-
-    print(f"[calibrate] created {len(aug_paths)} augmented images, extracting CLIP embeddings …")
-
-    # --- CLIP-space ratio ----------------------------------------------------
-    aug_embeds_raw, aug_valid_idx = extract_clip_embeddings(aug_paths, batch_size=batch_size)
-    aug_embeds = aug_embeds_raw / np.maximum(
-        np.linalg.norm(aug_embeds_raw, axis=1, keepdims=True), 1e-8
-    )
-
-    # Source embeds for the valid subset
-    valid_src_embeds = train_embeds[np.array([src_indices[i] for i in aug_valid_idx])]
-    valid_src_indices_in_train = [src_indices[i] for i in aug_valid_idx]
-
-    clip_cal = _compute_memorization_ratio_clip(
-        aug_embeds, valid_src_embeds, train_embeds,
-        source_indices_in_train=valid_src_indices_in_train,
-    )
-
-    # --- Pixel-space ratio ---------------------------------------------------
-    valid_aug_paths = [aug_paths[i] for i in aug_valid_idx]
-    valid_source_paths = [src_paths[i] for i in aug_valid_idx]
-
-    pixel_cal = _compute_memorization_ratio_pixel(
-        valid_aug_paths, valid_source_paths,
-        train_paths, image_size=image_size,
-    )
-
-    # --- Derive τ values (p5 of null distribution) ---------------------------
-    result: Dict[str, object] = {}
-    if pixel_cal["ratios"]:
-        parr = np.array(pixel_cal["ratios"])
-        result["pixel"] = {
-            "tau": float(np.percentile(parr, 5)),
-            "mean": float(np.mean(parr)),
-            "median": float(np.median(parr)),
-            "p5": float(np.percentile(parr, 5)),
-            "p25": float(np.percentile(parr, 25)),
-            "n_pairs": len(pixel_cal["ratios"]),
-        }
-    if clip_cal["ratios"]:
-        carr = np.array(clip_cal["ratios"])
-        result["clip"] = {
-            "tau": float(np.percentile(carr, 5)),
-            "mean": float(np.mean(carr)),
-            "median": float(np.median(carr)),
-            "p5": float(np.percentile(carr, 5)),
-            "p25": float(np.percentile(carr, 25)),
-            "n_pairs": len(clip_cal["ratios"]),
-        }
-
-    # Clean up temp images
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-
-    if result:
-        print(f"[calibrate] τ (pixel) = {result.get('pixel', {}).get('tau', 'N/A')}")
-        print(f"[calibrate] τ (CLIP)  = {result.get('clip', {}).get('tau', 'N/A')}")
-
-    return result
-
-
 def _compute_lpips_diversity(
     image_paths: List[Path],
     n_bootstrap: int = 150,
     device: str = "cpu",
 ) -> Dict[str, float]:
     """Mean LPIPS distance over random pairs (bootstrapped)."""
-    if len(image_paths) < 2:
-        return {"mean": float("nan"), "ci_lower": float("nan"), "ci_upper": float("nan")}
-        
-    import torch
+    if len(image_paths) < 2: return {"mean": float("nan"), "ci_lower": float("nan"), "ci_upper": float("nan")}
     import lpips
     import warnings
-    from PIL import Image
-    from torchvision import transforms
-    import random
 
     # Mute LPIPS setup output
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         # Ensure stdout isn't polluted by LPIPS initialization
-        import io, sys
+        import io
         old_stdout = sys.stdout
         sys.stdout = io.StringIO()
         try:
@@ -479,19 +344,18 @@ def _save_histogram(
     synthetic_scores: Optional[List[float]],
     class_name: str,
     out_path: Path,
+    technique: Optional[str] = None,
 ) -> None:
     """Plot the overlap of Real and Synthetic CLIP score distributions using dual Y-axes."""
     fig, ax1 = plt.subplots(figsize=(10, 6))
     bins = np.linspace(0, 45, 51)
     
-    # 1. Left axis for Real
     if real_scores:
         real_clean = [s for s in real_scores if not math.isnan(s)]
         ax1.hist(real_clean, bins=bins, alpha=0.5, color="#4A90D9", label="Real", edgecolor="#2A5079", linewidth=0.5)
         ax1.set_ylabel("Count (Real)", color="#4A90D9", fontsize=12, fontweight="bold")
         ax1.tick_params(axis='y', labelcolor="#4A90D9")
 
-    # 2. Right axis for Synthetic (using twinx)
     if synthetic_scores:
         ax2 = ax1.twinx()
         synth_clean = [s for s in synthetic_scores if not math.isnan(s)]
@@ -506,14 +370,15 @@ def _save_histogram(
     else:
         ax1.legend(loc="upper left", fontsize=11)
 
+    tech_label = f" ({technique})" if technique else ""
     ax1.set_xlabel("CLIP Score (0–100)", fontsize=12)
-    ax1.set_title(f"CLIP Score Distribution — {class_name}", fontsize=14, fontweight="bold", pad=15)
+    ax1.set_title(f"CLIP Score Distribution — {class_name}{tech_label}", fontsize=14, fontweight="bold", pad=15)
     ax1.grid(axis="y", alpha=0.2)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"[analyse] saved dual-axis histogram → {out_path}")
+    print(f"[analyse] saved dual-axis histogram -> {out_path}")
 
 
 def _save_metrics_json(
@@ -538,7 +403,7 @@ def _save_metrics_json(
 
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
-    print(f"[analyse] saved metrics  → {out_path}")
+    print(f"[analyse] saved metrics  -> {out_path}")
 
 
 def _save_failure_cases(
@@ -566,7 +431,7 @@ def _save_failure_cases(
             prompt_text = prompts[i] if i < len(prompts) else ""
             writer.writerow([rank, path.name, f"{dscore:.6f}", f"{pscore:.6f}" if pscore != "" else "", prompt_text])
 
-    print(f"[analyse] saved failures → {out_path}")
+    print(f"[analyse] saved failures -> {out_path}")
 
 
 def _save_extremes(
@@ -623,7 +488,7 @@ def _save_extremes(
     out_path = out_dir / f"{source_label}_extremes.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"[analyse] saved extremes → {out_path}")
+    print(f"[analyse] saved extremes -> {out_path}")
 
 
 def _run_umap(
@@ -635,7 +500,7 @@ def _run_umap(
     import umap as umap_lib
     print(
         f"[analyse] running UMAP ({embeddings.shape[0]:,} points, "
-        f"{embeddings.shape[1]}D → 2D, n_neighbors={n_neighbors}, "
+        f"{embeddings.shape[1]}D -> 2D, n_neighbors={n_neighbors}, "
         f"min_dist={min_dist}) …"
     )
     reducer = umap_lib.UMAP(
@@ -720,7 +585,7 @@ def _save_umap_plot(
     overlap_pct = metrics.get("overlap_synth_in_train", 0)
     spread_r    = metrics.get("spread_ratio", 0)
     centroid_d  = metrics.get("centroid_distance", 0)
-    annot = f"Overlap (synth→train): {overlap_pct:.0%}\nSpread ratio (synth/train): {spread_r:.2f}\nCentroid distance: {centroid_d:.2f}"
+    annot = f"Overlap (synth-train): {overlap_pct:.0%}\nSpread ratio (synth/train): {spread_r:.2f}\nCentroid distance: {centroid_d:.2f}"
     ax.text(0.98, 0.03, annot, transform=ax.transAxes, fontsize=8, verticalalignment="bottom", horizontalalignment="right", fontfamily="monospace", bbox=dict(boxstyle="round,pad=0.5", facecolor="white", alpha=0.85, edgecolor="#cccccc",))
     ax.grid(True, alpha=0.15)
     fig.tight_layout()
@@ -742,12 +607,12 @@ def _save_fidelity_plot(
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
     fig.suptitle(f"Conditioning Fidelity (Source vs Output) — {class_name}", fontsize=14, fontweight="bold")
 
-    for ax, dists, label, x_lab in zip(
+    for i, (ax, dists, label, x_lab) in enumerate(zip(
         axes,
         [pixel_dists, clip_dists],
         ["Pixel Space (RMSE)", "CLIP Space (Cosine Distance)"],
         ["RMSE", "Cosine Distance"],
-    ):
+    )):
         if not dists:
             ax.text(0.5, 0.5, "No pairing data", transform=ax.transAxes, ha='center')
             continue
@@ -755,29 +620,36 @@ def _save_fidelity_plot(
         arr = np.array(dists)
         p10 = np.percentile(arr, 10)
         p90 = np.percentile(arr, 90)
+        is_pixel = (i == 0)
 
-        ax.hist(dists, bins=40, color="#50C878", alpha=0.75, edgecolor="white")
+        ax.hist(dists, bins=40, color="#50C878" if is_pixel else "#4DB6AC", alpha=0.75, edgecolor="white")
 
-        # Empirical low-end: suspiciously close (memorization risk)
+        # Empirical low-end: most similar to source (Bottom 10%)
         ax.axvline(p10, color="#C62828", linestyle="--",
-                   label=f"p10 (memorization risk): {p10:.3f}")
-        # Empirical high-end: suspiciously far (transformation too strong / semantic loss)
-        ax.axvline(p90, color="#1565C0", linestyle="--",
-                   label=f"p90 (semantic drift risk): {p90:.3f}")
-
-        # Shade the Goldilocks band
-        ax.axvspan(p10, p90, alpha=0.08, color="#4CAF50", label="Goldilocks zone")
+                   label=f"p10 (Bottom 10% change): {p10:.3f}")
+        
+        if is_pixel:
+            # Empirical high-end: most varied from source (Top 10%)
+            ax.axvline(p90, color="#29B6F6", linestyle="--",
+                       label=f"p90 (Highest 10% change): {p90:.3f}")
+            ax.axvspan(p10, p90, alpha=0.08, color="#4CAF50", label="Central 80% zone")
+            ax.axvspan(p90, max(arr)*1.05 if len(arr)>0 else p90*1.1, alpha=0.08, color="#B3E5FC", label="High variation outliers")
+        else:
+            # Empirical high-end: most semantic distance from source (Top 10%)
+            ax.axvline(p90, color="#1565C0", linestyle="--",
+                       label=f"p90 (Highest 10% semantic change): {p90:.3f}")
+            ax.axvspan(p10, p90, alpha=0.08, color="#4CAF50", label="Central 80% zone")
 
         ax.set_xlabel(x_lab, fontsize=11)
         ax.set_ylabel("Count", fontsize=11)
         ax.set_title(f"{label} Distribution", fontsize=12)
-        ax.legend(fontsize=8, loc="upper right")
+        ax.legend(fontsize=7, loc="upper right")
         ax.grid(axis="y", alpha=0.3)
 
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"[analyse] saved fidelity plot → {out_path}")
+    print(f"[analyse] saved fidelity plot -> {out_path}")
 
 
 def _save_memorization_ratio_plot(
@@ -785,31 +657,23 @@ def _save_memorization_ratio_plot(
     clip_ratios: List[float],
     class_name: str,
     out_path: Path,
-    tau_ref: Optional[Dict[str, object]] = None,
 ) -> None:
     """Save histograms of the Yoon-adapted memorization ratio R.
 
     R = d(x_syn, x_src) / d(x_syn, x_src⊥)
-    R ≪ 1 → memorization, R ≈ 1 → meaningful transformation, R > 1 → mode drift.
+    R ≪ 1 -> memorization, R ≈ 1 -> meaningful transformation, R > 1 -> mode drift.
 
-    When *tau_ref* is provided (from ``_calibrate_memorization_tau`` or a
-    previously saved calibration JSON), a principled threshold derived from
-    a null distribution of known-good augmented pairs is drawn.  Otherwise
-    only descriptive statistics are shown with an UNCALIBRATED warning.
+    Plots descriptive statistics only (median, R=1 reference, counts).
     """
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-
-    calibrated = tau_ref is not None and bool(tau_ref)
-    title_suffix = "" if calibrated else " [UNCALIBRATED]"
     fig.suptitle(
-        f"Memorization Ratio R (Yoon-adapted) — {class_name}{title_suffix}",
+        f"Memorization Ratio R (Yoon-adapted) — {class_name}",
         fontsize=14, fontweight="bold",
     )
 
-    for ax, ratios, space_key, space_label in zip(
+    for ax, ratios, space_label in zip(
         axes,
         [pixel_ratios, clip_ratios],
-        ["pixel", "clip"],
         ["Pixel Space", "CLIP Space"],
     ):
         if not ratios:
@@ -828,40 +692,19 @@ def _save_memorization_ratio_plot(
         ax.axvline(median_r, color="#2E7D32", linestyle=":",
                    label=f"median R: {median_r:.3f}")
 
-        # --- Threshold ---
-        if calibrated and space_key in tau_ref:
-            # Use the calibrated τ from the null distribution
-            tau = float(tau_ref[space_key]["tau"])
-            ax.axvline(tau, color="#C62828", linestyle="--",
-                       label=f"τ (calibrated): {tau:.3f}")
-            ax.axvspan(0, tau, alpha=0.08, color="#C62828",
-                       label="Memorization zone")
-
-            n_memorized = int(np.sum(arr < tau))
-            n_drift = int(np.sum(arr > 1.0))
-            ax.text(
-                0.97, 0.95,
-                f"n(R < τ) = {n_memorized}\nn(R > 1) = {n_drift}",
-                transform=ax.transAxes, fontsize=8,
-                verticalalignment="top", horizontalalignment="right",
-                fontfamily="monospace",
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
-                          alpha=0.85, edgecolor="#cccccc"),
-            )
-        else:
-            # No reference — show descriptive stats only
-            n_drift = int(np.sum(arr > 1.0))
-            ax.text(
-                0.97, 0.95,
-                f"UNCALIBRATED\n(run --calibrate-tau first)\n\n"
-                f"n(R > 1) = {n_drift}",
-                transform=ax.transAxes, fontsize=8,
-                verticalalignment="top", horizontalalignment="right",
-                fontfamily="monospace",
-                color="#C62828",
-                bbox=dict(boxstyle="round,pad=0.4", facecolor="#FFF3E0",
-                          alpha=0.9, edgecolor="#E65100"),
-            )
+        # Descriptive counts
+        n_below_1 = int(np.sum(arr < 1.0))
+        n_above_1 = int(np.sum(arr > 1.0))
+        ax.text(
+            0.97, 0.95,
+            f"n(R < 1) = {n_below_1}\nn(R > 1) = {n_above_1}\n"
+            f"mean R = {np.mean(arr):.3f}",
+            transform=ax.transAxes, fontsize=8,
+            verticalalignment="top", horizontalalignment="right",
+            fontfamily="monospace",
+            bbox=dict(boxstyle="round,pad=0.4", facecolor="white",
+                      alpha=0.85, edgecolor="#cccccc"),
+        )
 
         ax.set_xlabel("R = d(syn, src) / d(syn, distractor)", fontsize=11)
         ax.set_ylabel("Count", fontsize=11)
@@ -872,7 +715,7 @@ def _save_memorization_ratio_plot(
     fig.tight_layout()
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
-    print(f"[analyse] saved memorization ratio plot → {out_path}")
+    print(f"[analyse] saved memorization ratio plot -> {out_path}")
 
 
 def _save_umap_metrics(
@@ -886,7 +729,7 @@ def _save_umap_metrics(
     }
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
-    print(f"[analyse] saved UMAP metrics → {out_path}")
+    print(f"[analyse] saved UMAP metrics -> {out_path}")
 
 
 def main() -> int:
@@ -903,19 +746,8 @@ def main() -> int:
     parser.add_argument("--max-val", type=int, default=None)
     parser.add_argument("--umap-neighbors", type=int, default=15)
     parser.add_argument("--umap-min-dist", type=float, default=0.2)
-    parser.add_argument(
-        "--calibrate-tau", action="store_true",
-        help="Run τ calibration: compute R on colour-jittered training pairs "
-             "and save the reference distribution to results/clip_analysis/<class>/tau_calibration.json. "
-             "This must be run once per class before memorization thresholds are meaningful.",
-    )
-    parser.add_argument(
-        "--tau-ref", default=None,
-        help="Path to a tau_calibration.json from a previous --calibrate-tau run. "
-             "If omitted, auto-detected from the output directory.",
-    )
-    parser.add_argument("--calibration-pairs", type=int, default=200,
-                        help="Number of augmented pairs for --calibrate-tau (default: 200).")
+
+    parser.add_argument("--out-dir", default=None, help="Explicit output directory (overrides default results/clip_analysis/<class>_<suffix>).")
     args = parser.parse_args()
 
     repo_root = _repo_root()
@@ -925,13 +757,9 @@ def main() -> int:
     if args.synthetic_dir:
         synth_dir = Path(args.synthetic_dir)
         if not inferred_class:
-            # e.g. "hair_drier_100_ip" -> split[0] is "hair", but we want "hair drier"
-            # Hardcode or detect the underscore pattern
             folder_parts = synth_dir.name.split('_')
-            if folder_parts[0] == "hair" and folder_parts[1] == "drier":
-                inferred_class = "hair drier"
-            else:
-                inferred_class = folder_parts[0]
+            if folder_parts[0] == "hair": inferred_class = "hair drier"
+            else: inferred_class = folder_parts[0]
             print(f"[analyse] inferred class '{inferred_class}' from folder '{synth_dir.name}'")
 
     if not inferred_class:
@@ -973,6 +801,34 @@ def main() -> int:
         for p in synth_paths:
             synth_prompts.append(filename_to_prompt.get(p.name, ""))
 
+    suffix = "syn"
+    tech_sources = []
+    if synth_dir: tech_sources.append(synth_dir.name.lower())
+    if prompt_json_path: tech_sources.append(prompt_json_path.name.lower())
+
+    for s in tech_sources:
+        parts = s.split('_')
+        if "ip" in parts: 
+            suffix = "ip"
+            break
+        if "cn" in parts:
+            suffix = "cn"
+            break
+        if "ti" in parts:
+            suffix = "ti"
+            break
+
+    if args.out_dir:
+        out_dir = Path(args.out_dir)
+    else:
+        class_folder = class_name.replace(" ", "_")
+        base_class_dir = repo_root / "results" / "clip_analysis" / class_folder
+        
+        if suffix == "syn":
+            out_dir = base_class_dir
+        else:
+            out_dir = base_class_dir / f"{class_folder}_{suffix}"
+
     print(f"\n[analyse] extracting CLIP embeddings for all relevant sets …")
     
     train_embeds: np.ndarray = np.empty((0, 768))
@@ -982,29 +838,7 @@ def main() -> int:
         if len(train_embeds) > 0:
             train_embeds = train_embeds / np.maximum(np.linalg.norm(train_embeds, axis=1, keepdims=True), 1e-8)
 
-    # -- τ Calibration (early exit if --calibrate-tau) -------------------------
-    if args.calibrate_tau:
-        if len(train_embeds) == 0:
-            print("[analyse] error: --calibrate-tau requires real training images (use --source both or real).")
-            return 1
-        cal_out_dir = repo_root / "results" / "clip_analysis" / class_name
-        cal_out_dir.mkdir(parents=True, exist_ok=True)
-        cal_result = _calibrate_memorization_tau(
-            real_paths, train_embeds,
-            n_pairs=args.calibration_pairs,
-            batch_size=args.batch_size,
-        )
-        if cal_result:
-            cal_path = cal_out_dir / "tau_calibration.json"
-            with cal_path.open("w", encoding="utf-8") as f:
-                json.dump(cal_result, f, indent=2)
-            print(f"\n[calibrate] saved calibration → {cal_path}")
-            print("[calibrate] use --tau-ref to load this in future analysis runs,")
-            print("            or it will be auto-detected from the output directory.")
-            return 0
-        else:
-            print("[calibrate] calibration failed — no valid pairs produced.")
-            return 1
+
 
     synth_embeds: np.ndarray = np.empty((0, 768))
     synth_valid_idx: List[int] = []
@@ -1044,18 +878,18 @@ def main() -> int:
         for i, sim in zip(synth_valid_idx, sims):
             synth_domain_scores[i] = float(max(sim, 0))
 
-        # Adherence (per-prompt) scoring
-        if not args.no_prompt_level and synth_prompts:
-            print(f"[analyse] scoring synthetic adherence against individual prompts …")
-            # This is still a bit heavy as it encodes N text strings, but much faster than N images
-            prompt_embeds = extract_clip_text_embeddings(synth_prompts)
-            
-            # We only have embeddings for synth_valid_idx
-            for i, actual_idx in enumerate(synth_valid_idx):
-                s_feat = synth_embeds[i]
-                t_feat = prompt_embeds[actual_idx]
-                sim = (s_feat @ t_feat.T) * 100
-                synth_prompt_scores[actual_idx] = float(max(sim, 0))
+        # NOTE: 
+        # if not args.no_prompt_level and synth_prompts:
+        #     print(f"[analyse] scoring synthetic adherence against individual prompts …")
+        #     # This is still a bit heavy as it encodes N text strings, but much faster than N images
+        #     prompt_embeds = extract_clip_text_embeddings(synth_prompts)
+        #     
+        #     # We only have embeddings for synth_valid_idx
+        #     for i, actual_idx in enumerate(synth_valid_idx):
+        #         s_feat = synth_embeds[i]
+        #         t_feat = prompt_embeds[actual_idx]
+        #         sim = (s_feat @ t_feat.T) * 100
+        #         synth_prompt_scores[actual_idx] = float(max(sim, 0))
 
     # -- Compute metrics ------------------------------------------------------
     real_domain_metrics = _compute_metrics(real_domain_scores) if real_domain_scores else None
@@ -1079,40 +913,28 @@ def main() -> int:
     if synth_domain_metrics:
         m = synth_domain_metrics
         print(f"  Synth (domain)   | n={m['count']:,}  mean={m['mean']:.4f}  median={m['median']:.4f}  std={m['std']:.4f}")
-    if synth_prompt_metrics:
-        m = synth_prompt_metrics
-        print(f"  Synth (prompt)   | n={m['count']:,}  mean={m['mean']:.4f}  median={m['median']:.4f}  std={m['std']:.4f}")
+    # if synth_prompt_metrics:
+    #     m = synth_prompt_metrics
+    #     print(f"  Synth (prompt)   | n={m['count']:,}  mean={m['mean']:.4f}  median={m['median']:.4f}  std={m['std']:.4f}")
     if emd is not None:
         print(f"  Wasserstein dist | {emd:.6f}")
     print("=" * 60)
 
     # -- Save outputs ---------------------------------------------------------
-    out_dir = repo_root / "results" / "clip_analysis" / class_name
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # -- Load τ reference (for memorization ratio plots) ----------------------
-    tau_ref: Optional[Dict[str, object]] = None
-    if args.tau_ref:
-        tau_ref_path = Path(args.tau_ref)
-        if tau_ref_path.exists():
-            with tau_ref_path.open("r", encoding="utf-8") as f:
-                tau_ref = json.load(f)
-            print(f"[analyse] loaded τ calibration from {tau_ref_path}")
-        else:
-            print(f"[analyse] warning: --tau-ref file not found: {tau_ref_path}")
-    else:
-        # Auto-detect from output directory
-        auto_tau = out_dir / "tau_calibration.json"
-        if auto_tau.exists():
-            with auto_tau.open("r", encoding="utf-8") as f:
-                tau_ref = json.load(f)
-            print(f"[analyse] auto-detected τ calibration from {auto_tau}")
+
+
+    # Readable technique name for plotting
+    tech_map = {"ip": "IP-Adapter", "cn": "ControlNet", "ti": "Textual Inversion"}
+    readable_tech = tech_map.get(suffix)
 
     _save_histogram(
         real_domain_scores or None,
         synth_domain_scores or None,
         class_name,
         out_dir / "distribution_histogram.png",
+        technique=readable_tech
     )
 
     _save_metrics_json(
@@ -1159,7 +981,6 @@ def main() -> int:
             print(f"     Synth  : {synth_div['mean']:.4f} (all pairs)")
             
             print("\n  => Structural (LPIPS) diversity:")
-            import torch
             lpips_device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_built() else "cpu")
             real_lpips_div = _compute_lpips_diversity(real_paths, n_bootstrap=150, device=lpips_device)
             synth_lpips_div = _compute_lpips_diversity(synth_paths, n_bootstrap=150, device=lpips_device)
@@ -1168,12 +989,6 @@ def main() -> int:
             
             # -- Source Fidelity Analysis (Conditioning Strength) ---------------------
             metrics_path = out_dir / "metrics_summary.json"
-            suffix = "syn"
-            if prompt_json_path:
-                fname = prompt_json_path.name.lower()
-                if "ip" in fname: suffix = "ip"
-                elif "controlnet" in fname or "cn" in fname or "canny" in fname: suffix = "cn"
-                elif "ti" in fname: suffix = "ti"
 
             if do_synth and synth_paths and not args.no_prompt_level:
                 _, json_samples = _load_prompt_json(prompt_json_path)
@@ -1234,7 +1049,6 @@ def main() -> int:
                 _save_memorization_ratio_plot(
                     pixel_ratio["ratios"], clip_ratio["ratios"],
                     class_name, out_dir / f"memorization_ratio_{suffix}.png",
-                    tau_ref=tau_ref,
                 )
                 
                 if metrics_path.exists():
@@ -1281,7 +1095,7 @@ def main() -> int:
                 
                 with metrics_path.open("w", encoding="utf-8") as f:
                     json.dump(metrics_data, f, indent=2)
-                print(f"\n[analyse] appended diversity metrics → {metrics_path.name}")
+                print(f"\n[analyse] appended diversity metrics -> {metrics_path.name}")
 
         # UMAP projection (all points fit together for consistent mapping)
         all_embeds = np.concatenate(
@@ -1304,12 +1118,6 @@ def main() -> int:
 
         # Save UMAP outputs
         dataset_label = prompt_json_path.stem if prompt_json_path else "synthetic"
-        
-        filename = prompt_json_path.name.lower()
-        suffix = "syn"
-        if "ip" in filename: suffix = "ip"
-        elif "controlnet" in filename or "cn" in filename or "canny" in filename: suffix = "cn"
-        elif "ti" in filename: suffix = "ti"
 
         _save_umap_plot(
             train_2d, val_2d, synth_2d,

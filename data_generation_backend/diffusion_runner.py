@@ -565,6 +565,7 @@ def main() -> int:
     parser.add_argument("--force-txt2img", action="store_true",help="Force text-to-image even when init_image is provided in JSON (ignores all init images).",)
     parser.add_argument("--use-ip-adapter", action="store_true", help="Use IP-Adapter with the specified reference images (from ip_image JSON field or --ip-image CLI flag).")
     parser.add_argument("--ip-image", default=None, help="Path to a reference image for IP-Adapter (CLI mode).")
+    parser.add_argument("--ip-scale", type=float, default=env_config.ip_scale, help="IP-Adapter scale (0.0–1.0).")
     parser.add_argument("--sweep-ip-scale", action="store_true", help="Sweep IP-Adapter scale 0.1–1.0 in 0.1 increments across images (requires --use-ip-adapter).")
 
     args = parser.parse_args()
