@@ -443,6 +443,26 @@ def _save_metrics_json(
     print(f"[analyse] saved metrics  -> {out_path}")
 
 
+def _raw_data_dir(out_dir: Path) -> Path:
+    return out_dir / "raw_data"
+
+
+def _raw_data_path(out_dir: Path, filename: str) -> Path:
+    return _raw_data_dir(out_dir) / filename
+
+
+def _load_float_list(path: Path) -> List[float]:
+    with path.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+    return [float(x) for x in data]
+
+
+def _load_umap_metrics(path: Path) -> Dict[str, float]:
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    return payload.get("metrics", {})
+
+
 def _save_failure_cases(
     synthetic_paths: List[Path],
     domain_scores: List[float],
@@ -965,6 +985,7 @@ def main() -> int:
 
     # -- Save outputs ---------------------------------------------------------
     out_dir.mkdir(parents=True, exist_ok=True)
+    _raw_data_dir(out_dir).mkdir(parents=True, exist_ok=True)
 
 
 
@@ -996,7 +1017,7 @@ def main() -> int:
             synth_domain_scores,
             synth_prompt_scores or None,
             synth_prompts,
-            out_dir / "failure_cases.csv",
+            _raw_data_path(out_dir, "failure_cases.csv"),
         )
 
     # -- Save best/worst image panels -----------------------------------------
@@ -1065,9 +1086,6 @@ def main() -> int:
                 clip_fid = _compute_clip_fidelity(np.stack(valid_synth_embeds), source_embeds)
                 
                 print(f"   => Mean Fidelity: Pixel={pixel_fid['mean_dist']:.4f}, CLIP={clip_fid['mean_dist']:.4f}")
-                
-                # Plot absolute-distance fidelity (empirical percentile bands)
-                _save_fidelity_plot(pixel_fid["distances"], clip_fid["distances"], class_name, out_dir / f"conditioning_fidelity_{suffix}.png")
 
                 # 3. Memorization Ratio R = d(syn, src) / d(syn, distractor)
                 print("\n[analyse] computing memorization ratio R (Yoon-adapted) …")
@@ -1088,12 +1106,6 @@ def main() -> int:
                 print(f"   => Memorization Ratio R:")
                 print(f"      Pixel  — mean={pixel_ratio['mean_ratio']:.4f}  median={pixel_ratio['median_ratio']:.4f}  (n={len(pixel_ratio['ratios'])})")
                 print(f"      CLIP   — mean={clip_ratio['mean_ratio']:.4f}  median={clip_ratio['median_ratio']:.4f}  (n={len(clip_ratio['ratios'])})")
-
-                # Plot ratio histograms (using calibrated τ if available)
-                _save_memorization_ratio_plot(
-                    pixel_ratio["ratios"], clip_ratio["ratios"],
-                    class_name, out_dir / f"memorization_ratio_{suffix}.png",
-                )
                 
                 if metrics_path.exists():
                     with metrics_path.open("r", encoding="utf-8") as f:
@@ -1110,14 +1122,33 @@ def main() -> int:
                     with metrics_path.open("w", encoding="utf-8") as f:
                         json.dump(metrics_data, f, indent=2)
                     
-                    with (out_dir / f"fidelity_distances_pixel_{suffix}.json").open("w") as f:
+                    fidelity_pixel_path = _raw_data_path(out_dir, f"fidelity_distances_pixel_{suffix}.json")
+                    fidelity_clip_path = _raw_data_path(out_dir, f"fidelity_distances_clip_{suffix}.json")
+                    memo_pixel_path = _raw_data_path(out_dir, f"memorization_ratios_pixel_{suffix}.json")
+                    memo_clip_path = _raw_data_path(out_dir, f"memorization_ratios_clip_{suffix}.json")
+
+                    with fidelity_pixel_path.open("w", encoding="utf-8") as f:
                         json.dump(pixel_fid["distances"], f)
-                    with (out_dir / f"fidelity_distances_clip_{suffix}.json").open("w") as f:
+                    with fidelity_clip_path.open("w", encoding="utf-8") as f:
                         json.dump(clip_fid["distances"], f)
-                    with (out_dir / f"memorization_ratios_pixel_{suffix}.json").open("w") as f:
+                    with memo_pixel_path.open("w", encoding="utf-8") as f:
                         json.dump(pixel_ratio["ratios"], f)
-                    with (out_dir / f"memorization_ratios_clip_{suffix}.json").open("w") as f:
+                    with memo_clip_path.open("w", encoding="utf-8") as f:
                         json.dump(clip_ratio["ratios"], f)
+
+                    # Regenerate plots from the raw exports so plot inputs stay tied to on-disk data.
+                    _save_fidelity_plot(
+                        _load_float_list(fidelity_pixel_path),
+                        _load_float_list(fidelity_clip_path),
+                        class_name,
+                        out_dir / f"conditioning_fidelity_{suffix}.png",
+                    )
+                    _save_memorization_ratio_plot(
+                        _load_float_list(memo_pixel_path),
+                        _load_float_list(memo_clip_path),
+                        class_name,
+                        out_dir / f"memorization_ratio_{suffix}.png",
+                    )
             else:
                 print("   [analyse] skipping fidelity analysis: no valid source images found on disk.")
 
@@ -1162,14 +1193,14 @@ def main() -> int:
 
         # Save UMAP outputs
         dataset_label = prompt_json_path.stem if prompt_json_path else "synthetic"
+        umap_metrics_path = _raw_data_path(out_dir, f"umap_metrics_{suffix}.json")
+        _save_umap_metrics(umap_metrics, class_name, umap_metrics_path)
 
+        # Read back the persisted metrics so the plot annotation matches the raw-data artifact.
         _save_umap_plot(
             train_2d, val_2d, synth_2d,
-            dataset_label, umap_metrics,
+            dataset_label, _load_umap_metrics(umap_metrics_path),
             class_name, out_dir / f"umap_clip_{suffix}.png",
-        )
-        _save_umap_metrics(
-            umap_metrics, class_name, out_dir / f"umap_metrics_{suffix}.json",
         )
 
     print(f"\n[analyse] all outputs written to {out_dir}/")
