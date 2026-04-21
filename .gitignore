@@ -12,6 +12,8 @@ data_generation_backend/embeddings
 data_generation_backend/prompt_generation/*.json
 data_generation_outputs/
 GEMINI.md
+*.pdf
+
 
 .vscode/
 .idea/

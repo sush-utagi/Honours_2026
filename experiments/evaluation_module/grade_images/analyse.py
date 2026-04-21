@@ -18,6 +18,7 @@ import matplotlib
 matplotlib.use("Agg")  # headless backend no display needed
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy import linalg
 from scipy.spatial import ConvexHull, Delaunay
 from scipy.stats import wasserstein_distance
 
@@ -41,7 +42,7 @@ def _collect_real_paths(
     ROOT = Path(__file__).resolve().parents[4]
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-        
+         
     from experiments.dataset_creation.dataset_assembler import HybridDatasetAssembler
     
     print(f"[analyse] finding {split} images for class '{class_name}' using HybridDatasetAssembler …")
@@ -116,6 +117,39 @@ def _compute_pairwise_diversity(embeddings: np.ndarray) -> Dict[str, float]:
     tri_i, tri_j = np.triu_indices(n, k=1)
     dists = 1.0 - sim_matrix[tri_i, tri_j]
     return {"mean": float(np.mean(dists)), "count": int(len(dists))}
+
+
+def _compute_clip_frechet_distance(
+    real_embeds: np.ndarray,
+    synth_embeds: np.ndarray,
+    eps: float = 1e-6,
+) -> Optional[float]:
+    """Fréchet distance between real and synthetic CLIP embedding distributions."""
+    if len(real_embeds) < 2 or len(synth_embeds) < 2:
+        return None
+
+    real = np.asarray(real_embeds, dtype=np.float64)
+    synth = np.asarray(synth_embeds, dtype=np.float64)
+
+    mu_real = real.mean(axis=0)
+    mu_synth = synth.mean(axis=0)
+    cov_real = np.cov(real, rowvar=False)
+    cov_synth = np.cov(synth, rowvar=False)
+
+    mean_term = float(np.sum((mu_real - mu_synth) ** 2))
+
+    cov_prod = cov_real @ cov_synth
+    covmean, _ = linalg.sqrtm(cov_prod, disp=False)
+    if not np.isfinite(covmean).all():
+        offset = np.eye(cov_real.shape[0], dtype=np.float64) * eps
+        covmean, _ = linalg.sqrtm((cov_real + offset) @ (cov_synth + offset), disp=False)
+
+    if np.iscomplexobj(covmean):
+        covmean = covmean.real
+
+    trace_term = float(np.trace(cov_real + cov_synth - 2.0 * covmean))
+
+    return max(mean_term + trace_term, 0.0)
 
 
 def _compute_conditioning_fidelity(
@@ -385,7 +419,8 @@ def _save_metrics_json(
     real_domain: Optional[Dict[str, float]],
     synth_domain: Optional[Dict[str, float]],
     synth_prompt: Optional[Dict[str, float]],
-    emd: Optional[float],
+    clip_frechet_distance: Optional[float],
+    projected_wasserstein: Optional[float],
     class_name: str,
     out_path: Path,
 ) -> None:
@@ -398,8 +433,10 @@ def _save_metrics_json(
         payload["synthetic"] = {"domain_level": synth_domain}
         if synth_prompt is not None:
             payload["synthetic"]["prompt_level"] = synth_prompt
-    if emd is not None:
-        payload["wasserstein_distance_domain"] = emd
+    if clip_frechet_distance is not None:
+        payload["clip_frechet_distance"] = clip_frechet_distance
+    if projected_wasserstein is not None:
+        payload["wasserstein_distance_domain_projection"] = projected_wasserstein
 
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
@@ -896,12 +933,16 @@ def main() -> int:
     synth_domain_metrics = _compute_metrics(synth_domain_scores) if synth_domain_scores else None
     synth_prompt_metrics = _compute_metrics(synth_prompt_scores) if synth_prompt_scores else None
 
-    emd: Optional[float] = None
+    clip_frechet_distance: Optional[float] = None
+    projected_wasserstein: Optional[float] = None
+    if len(train_embeds) > 1 and len(synth_embeds) > 1:
+        clip_frechet_distance = _compute_clip_frechet_distance(train_embeds, synth_embeds)
+
     if real_domain_scores and synth_domain_scores:
         real_clean = [s for s in real_domain_scores if not math.isnan(s)]
         synth_clean = [s for s in synth_domain_scores if not math.isnan(s)]
         if real_clean and synth_clean:
-            emd = float(wasserstein_distance(real_clean, synth_clean))
+            projected_wasserstein = float(wasserstein_distance(real_clean, synth_clean))
 
     # -- Print summary to stdout ----------------------------------------------
     print("\n" + "=" * 60)
@@ -916,8 +957,10 @@ def main() -> int:
     # if synth_prompt_metrics:
     #     m = synth_prompt_metrics
     #     print(f"  Synth (prompt)   | n={m['count']:,}  mean={m['mean']:.4f}  median={m['median']:.4f}  std={m['std']:.4f}")
-    if emd is not None:
-        print(f"  Wasserstein dist | {emd:.6f}")
+    if clip_frechet_distance is not None:
+        print(f"  CLIP Fréchet     | {clip_frechet_distance:.6f}")
+    if projected_wasserstein is not None:
+        print(f"  1D Wasserstein   | {projected_wasserstein:.6f}  (domain-text projection)")
     print("=" * 60)
 
     # -- Save outputs ---------------------------------------------------------
@@ -941,7 +984,8 @@ def main() -> int:
         real_domain_metrics,
         synth_domain_metrics,
         synth_prompt_metrics,
-        emd,
+        clip_frechet_distance,
+        projected_wasserstein,
         class_name,
         out_dir / "metrics_summary.json",
     )
