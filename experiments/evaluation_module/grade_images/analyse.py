@@ -106,17 +106,17 @@ def _compute_metrics(scores: List[float]) -> Dict[str, float]:
     }
 
 
-def _compute_pairwise_diversity(embeddings: np.ndarray) -> Dict[str, float]:
+def _compute_pairwise_diversity(embeddings: np.ndarray) -> Dict[str, object]:
     """Calculate mean pairwise cosine distance (expects L2-normalized inputs)."""
     n = len(embeddings)
-    if n < 2: return {"mean": float("nan")}
+    if n < 2: return {"mean": float("nan"), "distances": []}
     
     # Similarity matrix (N x N) - Dot product is cosine similarity if normalized
     sim_matrix = embeddings @ embeddings.T
     
     tri_i, tri_j = np.triu_indices(n, k=1)
     dists = 1.0 - sim_matrix[tri_i, tri_j]
-    return {"mean": float(np.mean(dists)), "count": int(len(dists))}
+    return {"mean": float(np.mean(dists)), "count": int(len(dists)), "distances": [float(d) for d in dists]}
 
 
 def _compute_clip_frechet_distance(
@@ -255,11 +255,11 @@ def _compute_memorization_ratio_pixel(
         mask = np.array([pp.resolve() != src_resolved for pp in pool_paths_list])
         if not mask.any():
             continue
-        d_distractor = float(np.min(pool_dists[mask]))
+        d_next_nearest_neighbour = float(np.min(pool_dists[mask]))
 
-        if d_distractor < 1e-12:
+        if d_next_nearest_neighbour < 1e-12:
             continue  # degenerate
-        ratios.append(d_src / d_distractor)
+        ratios.append(d_src / d_next_nearest_neighbour)
 
     return {
         "ratios": ratios,
@@ -291,7 +291,7 @@ def _compute_memorization_ratio_clip(
     sim_matrix = synth_embeds @ train_embeds.T  # (N, T)
     dist_matrix = 1.0 - sim_matrix  # cosine distance
 
-    # For each synthetic image, find the nearest distractor (exclude source)
+    # For each synthetic image, find the nearest next_nearest_neighbour (exclude source)
     ratios: List[float] = []
     for i in range(n):
         row = dist_matrix[i].copy()  # (T,)
@@ -306,10 +306,10 @@ def _compute_memorization_ratio_clip(
             identical_mask = source_sim > 0.9999
             row[identical_mask] = np.inf
 
-        d_distractor = float(np.min(row))
-        if d_distractor < 1e-12:
+        d_next_nearest_neighbour = float(np.min(row))
+        if d_next_nearest_neighbour < 1e-12:
             continue  # degenerate
-        ratios.append(float(d_src[i]) / d_distractor)
+        ratios.append(float(d_src[i]) / d_next_nearest_neighbour)
 
     return {
         "ratios": ratios,
@@ -322,9 +322,9 @@ def _compute_lpips_diversity(
     image_paths: List[Path],
     n_bootstrap: int = 150,
     device: str = "cpu",
-) -> Dict[str, float]:
+) -> Dict[str, object]:
     """Mean LPIPS distance over random pairs (bootstrapped)."""
-    if len(image_paths) < 2: return {"mean": float("nan"), "ci_lower": float("nan"), "ci_upper": float("nan")}
+    if len(image_paths) < 2: return {"mean": float("nan"), "ci_lower": float("nan"), "ci_upper": float("nan"), "distances": []}
     import lpips
     import warnings
 
@@ -363,13 +363,14 @@ def _compute_lpips_diversity(
                 continue
 
     if not distances:
-        return {"mean": float("nan"), "ci_lower": float("nan"), "ci_upper": float("nan")}
+        return {"mean": float("nan"), "ci_lower": float("nan"), "ci_upper": float("nan"), "distances": []}
 
     return {
         "mean": float(np.mean(distances)),
         "ci_lower": float(np.percentile(distances, 2.5)),
         "ci_upper": float(np.percentile(distances, 97.5)),
         "n_bootstrap": len(distances),
+        "distances": distances,
     }
 
 
@@ -763,7 +764,7 @@ def _save_memorization_ratio_plot(
                       alpha=0.85, edgecolor="#cccccc"),
         )
 
-        ax.set_xlabel("R = d(syn, src) / d(syn, distractor)", fontsize=11)
+        ax.set_xlabel("R = d(syn, src) / d(syn, next_nearest_neighbour)", fontsize=11)
         ax.set_ylabel("Count", fontsize=11)
         ax.set_title(f"{space_label}", fontsize=12)
         ax.legend(fontsize=7.5, loc="upper right")
@@ -987,7 +988,11 @@ def main() -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     _raw_data_dir(out_dir).mkdir(parents=True, exist_ok=True)
 
-
+    if real_domain_scores and synth_domain_scores:
+        with open(_raw_data_dir(out_dir) / "real_domain_scores.json", "w") as f:
+            json.dump([s for s in real_domain_scores if not math.isnan(s)], f)
+        with open(_raw_data_dir(out_dir) / "synth_domain_scores.json", "w") as f:
+            json.dump([s for s in synth_domain_scores if not math.isnan(s)], f)
 
     # Readable technique name for plotting
     tech_map = {"ip": "IP-Adapter", "cn": "ControlNet", "ti": "Textual Inversion"}
@@ -1052,6 +1057,20 @@ def main() -> int:
             print(f"     Real   : {real_lpips_div['mean']:.4f}  (95% CI: {real_lpips_div['ci_lower']:.4f} - {real_lpips_div['ci_upper']:.4f})")
             print(f"     Synth  : {synth_lpips_div['mean']:.4f}  (95% CI: {synth_lpips_div['ci_lower']:.4f} - {synth_lpips_div['ci_upper']:.4f})")
             
+            # Save raw distance lists
+            if out_dir is not None:
+                rdd = _raw_data_dir(out_dir)
+                rdd.mkdir(parents=True, exist_ok=True)
+                with open(rdd / "real_semantic_distances.json", "w") as f:
+                    json.dump(real_div.get("distances", []), f)
+                with open(rdd / "synth_semantic_distances.json", "w") as f:
+                    json.dump(synth_div.get("distances", []), f)
+                with open(rdd / "real_structural_distances.json", "w") as f:
+                    json.dump(real_lpips_div.get("distances", []), f)
+                with open(rdd / "synth_structural_distances.json", "w") as f:
+                    json.dump(synth_lpips_div.get("distances", []), f)
+                    
+            
             # -- Source Fidelity Analysis (Conditioning Strength) ---------------------
             metrics_path = out_dir / "metrics_summary.json"
 
@@ -1087,16 +1106,16 @@ def main() -> int:
                 
                 print(f"   => Mean Fidelity: Pixel={pixel_fid['mean_dist']:.4f}, CLIP={clip_fid['mean_dist']:.4f}")
 
-                # 3. Memorization Ratio R = d(syn, src) / d(syn, distractor)
+                # 3. Memorization Ratio R = d(syn, src) / d(syn, next_nearest_neighbour)
                 print("\n[analyse] computing memorization ratio R (Yoon-adapted) …")
 
-                # Pixel-space ratio (uses a pool of training images as distractors)
+                # Pixel-space ratio (uses a pool of training images as next_nearest_neighbours)
                 print("   => Pixel-space ratio …")
                 pixel_ratio = _compute_memorization_ratio_pixel(
                     valid_synth_paths, valid_source_paths, real_paths,
                 )
 
-                # CLIP-space ratio (uses full training embedding matrix as distractors)
+                # CLIP-space ratio (uses full training embedding matrix as next_nearest_neighbours)
                 print("   => CLIP-space ratio …")
                 valid_synth_embeds_arr = np.stack(valid_synth_embeds)
                 clip_ratio = _compute_memorization_ratio_clip(
