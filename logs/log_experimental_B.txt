@@ -1,0 +1,3 @@
+[run] model_type=experimental_B run_dir=/Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B
+[device] using mps
+[data] train samples: 437,715 | val samples: 48,504

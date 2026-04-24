@@ -67,9 +67,17 @@ def ingest_class_dir(
     for src in sorted(class_dir.iterdir()):
         if not src.is_file():
             continue
+        
+        # Only process image files
+        if src.suffix.lower() not in [".jpg", ".jpeg", ".png"]:
+            continue
 
-        # Read size
+        # skip any all black images (would be black because of the safety filter)
         with Image.open(src) as im:
+            if not im.getbbox():
+                print(f"[skip] {src.name} is all black; likely safety-filtered.")
+                continue
+            
             width, height = im.size
 
         # Destination filename to avoid clashes
@@ -143,10 +151,14 @@ def main() -> None:
 
     for class_dir in sorted(p for p in synth_root.iterdir() if p.is_dir()):
         class_name = class_dir.name
-        if class_name not in cat_lookup:
-            print(f"[skip] '{class_name}' not in categories; skipping folder {class_dir}")
+        # 'hair_drier' -> 'hair drier')
+        lookup_name = class_name.replace("_", " ")
+        
+        if lookup_name not in cat_lookup:
+            print(f"[skip] '{class_name}' (as '{lookup_name}') not in categories; skipping folder {class_dir}")
             continue
-        category_id = cat_lookup[class_name]
+        
+        category_id = cat_lookup[lookup_name]
         added, next_img_id, next_ann_id = ingest_class_dir(
             class_dir, class_name, category_id, train_dir, data, next_img_id, next_ann_id
         )

@@ -2,6 +2,7 @@ import os
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import norm
 
 def _load_json_list(path):
     with open(path, 'r') as f:
@@ -37,7 +38,16 @@ def main():
                 continue
                 
             parts = tech_dir_name.split('_')
-            tech = parts[-1].upper()
+            tech_raw = parts[-1].lower()
+            if tech_raw == 'ip':
+                tech = 'IP-Adapter'
+            elif tech_raw == 'cn':
+                tech = 'ControlNet'
+            elif tech_raw == 'ti':
+                tech = 'Textual Inversion'
+            else:
+                tech = tech_raw.upper()
+                
             cls_name = cls.replace('_', ' ').title()
             label = f"{cls_name} ({tech})"
             
@@ -70,6 +80,8 @@ def main():
         real_scores = _load_json_list(paths["real"])
         synth_scores = _load_json_list(paths["synth"])
         
+        print(f"[data] {label}: Real instances={len(real_scores)}, Synthetic instances={len(synth_scores)}")
+        
         ax = axes[i]
         
         # Determine the shared binning across both so they align perfectly
@@ -80,23 +92,35 @@ def main():
         color_real = '#673AB7'    # Deep Purple
         color_synth = '#00BFA5'   # Teal
         
+        text_color_real = '#4A148C'   # Very Dark Purple
+        text_color_synth = '#004D40'  # Very Dark Teal
+        
+        bin_width = bins[1] - bins[0]
+        x_fit = np.linspace(bins[0], bins[-1], 200)
+        
         # Primary axis for Real Data
         ax.hist(real_scores, bins=bins, alpha=0.5, color=color_real, label='Real')
-        ax.set_ylabel("Count (Real)", color=color_real, fontweight='bold')
-        ax.tick_params(axis='y', labelcolor=color_real)
+        ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold')
+        ax.tick_params(axis='y', labelcolor=text_color_real)
+        
+        real_mean, real_std = np.mean(real_scores), np.std(real_scores)
+        real_pdf = norm.pdf(x_fit, real_mean, real_std) * len(real_scores) * bin_width
+        ax.plot(x_fit, real_pdf, color='#4527A0', linewidth=2.5, alpha=0.75, zorder=4)
         
         # Create independent secondary axis for Synthetic Data
         ax2 = ax.twinx()
         ax2.hist(synth_scores, bins=bins, alpha=0.4, color=color_synth, label='Synthetic')
-        ax2.set_ylabel("Count (Synthetic)", color=color_synth, fontweight='bold')
-        ax2.tick_params(axis='y', labelcolor=color_synth)
+        ax2.set_ylabel("Count (Synthetic)", color=text_color_synth, fontweight='bold')
+        ax2.tick_params(axis='y', labelcolor=text_color_synth)
+        
+        synth_mean, synth_std = np.mean(synth_scores), np.std(synth_scores)
+        synth_pdf = norm.pdf(x_fit, synth_mean, synth_std) * len(synth_scores) * bin_width
+        ax2.plot(x_fit, synth_pdf, color='#00695C', linewidth=2.5, alpha=0.75, zorder=4)
         
         # Plot Real mean vertical dash ON AX2 so it layers above all histograms!
-        real_mean = np.mean(real_scores)
         ax2.axvline(real_mean, color='#4527A0', linestyle='--', linewidth=2.5, zorder=5, label=f'Real Mean: {real_mean:.1f}')
         
         # Plot Synth mean vertical dash
-        synth_mean = np.mean(synth_scores)
         ax2.axvline(synth_mean, color='#00695C', linestyle='--', linewidth=2.5, zorder=5, label=f'Synth Mean: {synth_mean:.1f}')
         
         # Formating & Titles

@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """Train a ResNet18 classifier on contextual COCO crops (no pretraining).
 
-Supports both the baseline model and an experimental variant.
+Supports both the baseline models and experimental variants.
 
 RESUME TRAINING (examples):
     python experiments/model/train_model.py --model-type baseline --epochs 2 --resume-ckpt runs/baseline_model_A/checkpoints/last.pt
     python experiments/model/train_model.py --model-type experimental --epochs 2 --resume-ckpt runs/experimental_model_A/checkpoints/last.pt
+    python experiments/model/train_model.py --model-type experimental_B --epochs 2 --resume-ckpt runs/experimental_model_B/checkpoints/last.pt
 
 NEW TRAINING:
     python experiments/model/train_model.py --model-type baseline --epochs <NUM_EPOCHS>
     python experiments/model/train_model.py --model-type experimental --epochs <NUM_EPOCHS>
+    python experiments/model/train_model.py --model-type experimental_B --epochs <NUM_EPOCHS>
 """
 
 from __future__ import annotations
@@ -111,23 +113,9 @@ def generate_gradcam_overlays(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train (baseline or experimental) ResNet18 classifier.")
-    parser.add_argument(
-        "--model-type",
-        choices=["baseline", "baseline_B", "experimental"],
-        default="baseline",
-        help="Model variant; controls run/log directories (default: baseline).",
-    )
-    parser.add_argument(
-        "--epochs",
-        type=int,
-        default=2,
-        help="Number of additional epochs to train (default: 2).",
-    )
-    parser.add_argument(
-        "--resume-ckpt",
-        default=None,
-        help="Optional checkpoint path to resume training from.",
-    )
+    parser.add_argument("--model-type", choices=["baseline", "baseline_B", "experimental", "experimental_B"], default="baseline", help="Model variant; controls run/log directories (default: baseline).",)
+    parser.add_argument("--epochs", type=int, default=2, help="Number of additional epochs to train (default: 2).",)
+    parser.add_argument("--resume-ckpt", default=None, help="Optional checkpoint path to resume training from.",)
     args = parser.parse_args()
 
     device = select_device()
@@ -149,9 +137,14 @@ def main() -> None:
     elif args.model_type == "baseline_B":
         run_name = "baseline_model_B"
         log_name = "log_baseline_B.txt"
-    else:
+    elif args.model_type == "experimental":
         run_name = "experimental_model_A"
         log_name = "log_experimental_A.txt"
+    elif args.model_type == "experimental_B":
+        run_name = "experimental_model_B"
+        log_name = "log_experimental_B.txt"
+    else:
+        raise ValueError(f"Unknown model_type: {args.model_type}")
     output_dir = PROJECT_ROOT / "runs" / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
     print(f"[run] model_type={args.model_type} run_dir={output_dir}")

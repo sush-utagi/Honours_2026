@@ -2,6 +2,7 @@ import os
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.stats import norm
 
 def _load_json_list(path):
     with open(path, 'r') as f:
@@ -37,7 +38,16 @@ def main():
                 continue
                 
             parts = tech_dir_name.split('_')
-            tech = parts[-1].upper()
+            tech_raw = parts[-1].lower()
+            if tech_raw == 'ip':
+                tech = 'IP-Adapter'
+            elif tech_raw == 'cn':
+                tech = 'ControlNet'
+            elif tech_raw == 'ti':
+                tech = 'Textual Inversion'
+            else:
+                tech = tech_raw.upper()
+                
             cls_name = cls.replace('_', ' ').title()
             label = f"{cls_name} ({tech})"
             
@@ -79,29 +89,40 @@ def main():
         ax_struct = axes[i, 0]
         ax_sem = axes[i, 1]
         
-        # --- Helper function for drawing dual axis histograms ---
         def plot_dual_hist(ax, real_data, synth_data, bins, title, xlabel):
             color_real = '#4A90D9'
             color_synth = '#E8833A'
             
+            text_color_real = '#1565C0'   # Dark Blue
+            text_color_synth = '#BF360C'  # Dark Orange/Rust
+            
+            bin_width = bins[1] - bins[0]
+            x_fit = np.linspace(bins[0], bins[-1], 200)
+            
             # Primary axis for Real Data
             ax.hist(real_data, bins=bins, alpha=0.5, color=color_real, label='Real')
-            ax.set_ylabel("Count (Real)", color=color_real, fontweight='bold')
-            ax.tick_params(axis='y', labelcolor=color_real)
+            ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold')
+            ax.tick_params(axis='y', labelcolor=text_color_real)
             
-            # Plot Real mean vertical dash
-            real_mean = np.mean(real_data)
-            ax.axvline(real_mean, color='#1565C0', linestyle='--', linewidth=2, label=f'Real Mean: {real_mean:.3f}')
+            real_mean, real_std = np.mean(real_data), np.std(real_data)
+            real_pdf = norm.pdf(x_fit, real_mean, real_std) * len(real_data) * bin_width
+            ax.plot(x_fit, real_pdf, color='#1565C0', linewidth=2.5, alpha=0.75, zorder=4)
             
             # Create independent secondary axis for Synthetic Data
             ax2 = ax.twinx()
             ax2.hist(synth_data, bins=bins, alpha=0.4, color=color_synth, label='Synthetic')
-            ax2.set_ylabel("Count (Synthetic)", color=color_synth, fontweight='bold')
-            ax2.tick_params(axis='y', labelcolor=color_synth)
+            ax2.set_ylabel("Count (Synthetic)", color=text_color_synth, fontweight='bold')
+            ax2.tick_params(axis='y', labelcolor=text_color_synth)
+            
+            synth_mean, synth_std = np.mean(synth_data), np.std(synth_data)
+            synth_pdf = norm.pdf(x_fit, synth_mean, synth_std) * len(synth_data) * bin_width
+            ax2.plot(x_fit, synth_pdf, color='#D84315', linewidth=2.5, alpha=0.75, zorder=4)
+            
+            # Plot Real mean vertical dash ON AX2
+            ax2.axvline(real_mean, color='#1565C0', linestyle='--', linewidth=2, zorder=5, label=f'Real Mean: {real_mean:.3f}')
             
             # Plot Synth mean vertical dash
-            synth_mean = np.mean(synth_data)
-            ax2.axvline(synth_mean, color='#D84315', linestyle='--', linewidth=2, label=f'Synth Mean: {synth_mean:.3f}')
+            ax2.axvline(synth_mean, color='#D84315', linestyle='--', linewidth=2, zorder=5, label=f'Synth Mean: {synth_mean:.3f}')
             
             # Style & Labels
             ax.set_title(title, fontsize=12, pad=15, fontweight='bold')
