@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover - handled at runtime
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
 
 
-def _pil_to_tensor_512(img: Image.Image) -> torch.Tensor:
+def pil_to_tensor_512(img: Image.Image) -> torch.Tensor:
     img = img.convert("RGB").resize((512, 512), resample=Image.BILINEAR)
     arr = np.asarray(img).astype(np.float32) / 255.0
     tensor = torch.from_numpy(arr).permute(2, 0, 1)  # HWC -> CHW
@@ -54,7 +54,7 @@ class MultiClassDataset(Dataset):
     def __getitem__(self, idx: int) -> Tuple[torch.Tensor, int, bool]:
         sample = self.samples[idx]
         img = Image.open(sample.path)
-        tensor = _pil_to_tensor_512(img)
+        tensor = pil_to_tensor_512(img)
         return tensor, sample.label, sample.synthetic
 
 

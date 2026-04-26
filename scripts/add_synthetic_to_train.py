@@ -65,7 +65,7 @@ def ingest_class_dir(
 
     images_added = 0
     for src in sorted(class_dir.iterdir()):
-        if not src.is_file():
+        if not src.is_file() or src.name.startswith("."):
             continue
         
         # Only process image files
@@ -77,7 +77,7 @@ def ingest_class_dir(
             if not im.getbbox():
                 print(f"[skip] {src.name} is all black; likely safety-filtered.")
                 continue
-            
+
             width, height = im.size
 
         # Destination filename to avoid clashes

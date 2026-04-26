@@ -237,50 +237,15 @@ def plot_confusion_matrices(metrics: dict, class_names: Sequence[str], out_dir: 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Evaluate baseline or experimental classifier on full evaluation set.")
-    parser.add_argument(
-        "--model-type",
-        choices=["baseline", "experimental"],
-        default="baseline",
-        help="Model variant label; used for report naming (default: baseline).",
-    )
-    parser.add_argument(
-        "--ckpt",
-        required=True,
-        help="Path to checkpoint (e.g., runs/baseline_model_A/checkpoints/best.pt or runs/experimental_model_A/checkpoints/best.pt)",
-    )
-    parser.add_argument(
-        "--split",
-        choices=["val", "test"],
-        default="val",
-        help="Which dataset split to evaluate on (default: val).",
-    )
-    parser.add_argument(
-        "--data-dir",
-        default=None,
-        help="Images directory (defaults to coco_dataset/contextual_crops/images/<split>).",
-    )
-    parser.add_argument(
-        "--ann-file",
-        default=None,
-        help="COCO annotations file (defaults to coco_dataset/contextual_crops/annotations/single_instances_<split>.json).",
-    )
-    parser.add_argument(
-        "--results-dir",
-        default=str(DEFAULT_RESULTS_DIR),
-        help="Directory to store the text report (default: results).",
-    )
-    parser.add_argument(
-        "--plot-confusion",
-        action="store_true",
-        help="Generate and save per-class 2x2 confusion matrices.",
-    )
+    parser.add_argument("--model-type", choices=["baseline", "baseline_B", "experimental", "experimental_B"], default="baseline", help="Model variant label; used for report naming (default: baseline).")
+    parser.add_argument("--ckpt", required=True, help="Path to checkpoint (e.g., runs/baseline_model_A/checkpoints/best.pt or runs/experimental_model_A/checkpoints/best.pt)")
+    parser.add_argument("--split", choices=["val", "test"], default="val", help="Which dataset split to evaluate on (default: val).")
+    parser.add_argument("--data-dir", default=None, help="Images directory (defaults to coco_dataset/contextual_crops/images/<split>).")
+    parser.add_argument("--ann-file", default=None, help="COCO annotations file (defaults to coco_dataset/contextual_crops/annotations/single_instances_<split>.json).")
+    parser.add_argument("--results-dir", default=str(DEFAULT_RESULTS_DIR), help="Directory to store the text report (default: results).")
+    parser.add_argument("--plot-confusion", action="store_true", help="Generate and save per-class 2x2 confusion matrices.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed (reserved for future use).")
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=32,
-        help="Batch size for evaluation (default: 32). Larger uses more GPU, smaller saves memory.",
-    )
+    parser.add_argument("--batch-size", type=int, default=32, help="Batch size for evaluation (default: 32). Larger uses more GPU, smaller saves memory.")
     args = parser.parse_args()
 
     device = select_device()

@@ -18,3 +18,15 @@ Epoch 7/8: train_loss=0.9092 val_loss=1.0447 train_acc=0.733 val_acc=0.699
 Epoch 8/8: train_loss=0.8446 val_loss=0.9953 train_acc=0.751 val_acc=0.716
 [ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_B/checkpoints/best.pt (val_acc=0.716)
 [val] loss=0.9953 acc=0.716
+
+============================================================
+Resumed training run
+[run] model_type=baseline_B run_dir=/Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_B
+[device] using mps
+[data] train samples: 437,618 | val samples: 48,504
+[resume] loaded /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_B/checkpoints/last.pt (epoch=8, best_val_acc=0.7155549142480211)
+Epoch 9/10: train_loss=0.7893 val_loss=0.9545 train_acc=0.765 val_acc=0.725
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_B/checkpoints/best.pt (val_acc=0.725)
+Epoch 10/10: train_loss=0.7351 val_loss=0.9498 train_acc=0.780 val_acc=0.727
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/baseline_model_B/checkpoints/best.pt (val_acc=0.727)
+[val] loss=0.9498 acc=0.727

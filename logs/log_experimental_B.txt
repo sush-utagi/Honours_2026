@@ -1,3 +1,18 @@
 [run] model_type=experimental_B run_dir=/Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B
 [device] using mps
 [data] train samples: 437,715 | val samples: 48,504
+Epoch 1/8: train_loss=2.4488 val_loss=1.9768 train_acc=0.364 val_acc=0.460
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.460)
+Epoch 2/8: train_loss=1.6240 val_loss=1.5154 train_acc=0.553 val_acc=0.579
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.579)
+Epoch 3/8: train_loss=1.3456 val_loss=1.2892 train_acc=0.622 val_acc=0.636
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.636)
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.654)
+Epoch 5/8: train_loss=1.0675 val_loss=1.1241 train_acc=0.693 val_acc=0.679
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.679)
+Epoch 6/8: train_loss=0.9813 val_loss=1.0575 train_acc=0.715 val_acc=0.697
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.697)
+Epoch 7/8: train_loss=0.9092 val_loss=1.0182 train_acc=0.733 val_acc=0.706
+[ckpt] saved best checkpoint to /Users/susheelutagi/Documents/GitHub/Honours_2026/runs/experimental_model_B/checkpoints/best.pt (val_acc=0.706)
+Epoch 8/8: train_loss=0.8458 val_loss=1.0215 train_acc=0.751 val_acc=0.705
+[val] loss=1.0215 acc=0.705
