@@ -20,6 +20,7 @@ import matplotlib.pyplot as plt
 CONTEXT_ROOT = Path(__file__).resolve().parents[2] / "coco_dataset" / "contextual_crops"
 ANN_DIR = CONTEXT_ROOT / "annotations"
 SPLITS = ["train", "val", "test"]
+# SPLITS = ["train"]
 
 
 def load_counts(split: str) -> tuple[List[str], Counter]:
@@ -35,31 +36,44 @@ def load_counts(split: str) -> tuple[List[str], Counter]:
     for ann in data.get("annotations", []):
         cname = cat_id_to_name.get(ann["category_id"], f"id_{ann['category_id']}")
         counts[cname] += 1
-
-    # Ensure consistent ordering by category id/name
     ordered_names = [cat_id_to_name[c["id"]] for c in sorted(data.get("categories", []), key=lambda c: c["id"])]
     return ordered_names, counts
 
 
-def plot_split(split: str, names: List[str], counts: Counter, ax):
-    # Sort classes from highest count to lowest
+def plot_split(split: str, names: List[str], counts: Counter, ax, is_bottom: bool):
     sorted_names = sorted(names, key=lambda n: counts.get(n, 0), reverse=True)
     values = [counts.get(n, 0) for n in sorted_names]
-    ax.bar(range(len(sorted_names)), values, color="#4C8BF5")
-    ax.set_title(f"{split} (n={sum(values):,})")
-    ax.set_ylabel("Count")
+    
+    ax.bar(range(len(sorted_names)), values, color="#4C8BF5", edgecolor='black', linewidth=0.5)
+    ax.set_title(f"{split.capitalize()} Split ({sum(values):,} images)", fontsize=28, fontweight="bold", pad=25)
+    ax.set_ylabel("Count", fontsize=18, fontweight="bold")
+    
     ax.set_xticks(range(len(sorted_names)))
-    ax.set_xticklabels(sorted_names, rotation=90, fontsize=7)
+    if is_bottom:
+        ax.set_xticklabels(sorted_names, rotation=90, fontsize=14)
+    else:
+        ax.set_xticklabels([])
+
+    ax.grid(axis='y', linestyle='--', alpha=0.7)
 
 
 def main():
-    fig, axes = plt.subplots(3, 1, figsize=(14, 10), constrained_layout=True)
-    axes = axes.flatten()
+    num_splits = len(SPLITS)
+    fig, axes = plt.subplots(num_splits, 1, figsize=(16, 6 * num_splits), sharex=True, constrained_layout=True)
+    
+    if num_splits == 1:
+        axes_list = [axes]
+    else:
+        axes_list = axes.flatten()
+
     for i, split in enumerate(SPLITS):
         names, counts = load_counts(split)
-        plot_split(split, names, counts, axes[i])
-
-    out_path = CONTEXT_ROOT / "class_distribution.png"
+        is_bottom = (i == (num_splits - 1))
+        plot_split(split, names, counts, axes_list[i], is_bottom)
+    fig_dir = Path(__file__).resolve().parents[2] / "experiments" / "figures"
+    fig_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"{'_'.join(SPLITS)}_class_distribution.png"
+    out_path = fig_dir / fname
     plt.savefig(out_path, dpi=200)
     print(f"[done] Saved class distribution plot to {out_path}")
 
