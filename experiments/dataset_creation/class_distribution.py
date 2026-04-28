@@ -17,10 +17,12 @@ import matplotlib
 matplotlib.use("Agg")  # safe default; switch to interactive if desired
 import matplotlib.pyplot as plt
 
+FOR_SLIDES = True
+
 CONTEXT_ROOT = Path(__file__).resolve().parents[2] / "coco_dataset" / "contextual_crops"
 ANN_DIR = CONTEXT_ROOT / "annotations"
-SPLITS = ["train", "val", "test"]
-# SPLITS = ["train"]
+# SPLITS = ["train", "val", "test"]
+SPLITS = ["train"]
 
 
 def load_counts(split: str) -> tuple[List[str], Counter]:
@@ -45,8 +47,13 @@ def plot_split(split: str, names: List[str], counts: Counter, ax, is_bottom: boo
     values = [counts.get(n, 0) for n in sorted_names]
     
     ax.bar(range(len(sorted_names)), values, color="#4C8BF5", edgecolor='black', linewidth=0.5)
-    ax.set_title(f"{split.capitalize()} Split ({sum(values):,} images)", fontsize=28, fontweight="bold", pad=25)
+    if not FOR_SLIDES:
+        ax.set_title(f"{split.capitalize()} Split ({sum(values):,} images)", fontsize=28, fontweight="bold", pad=25)
+    else:
+        ax.set_title(f"MS COCO Dataset Objects", fontsize=18, pad=15)
     ax.set_ylabel("Count", fontsize=18, fontweight="bold")
+    # if FOR_SLIDES:
+    #     ax.set_yscale('log')
     
     ax.set_xticks(range(len(sorted_names)))
     if is_bottom:
@@ -72,7 +79,7 @@ def main():
         plot_split(split, names, counts, axes_list[i], is_bottom)
     fig_dir = Path(__file__).resolve().parents[2] / "experiments" / "figures"
     fig_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"{'_'.join(SPLITS)}_class_distribution.png"
+    fname = f"{'_'.join(SPLITS)}_class_distribution.png" if not FOR_SLIDES else "coco_long_tail_example.png"
     out_path = fig_dir / fname
     plt.savefig(out_path, dpi=200)
     print(f"[done] Saved class distribution plot to {out_path}")
