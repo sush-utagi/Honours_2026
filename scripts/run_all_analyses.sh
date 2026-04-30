@@ -37,5 +37,11 @@ python experiments/evaluation_module/grade_images/plot_domain_scores.py
 echo "=> Plotting Global Distances (Frechet, Wasserstein)..."
 python experiments/evaluation_module/grade_images/plot_distances.py
 
+echo "=> Plotting Memorization Ratios..."
+python experiments/evaluation_module/grade_images/plot_memorization_ratios.py
+
+echo "=> Plotting Conditioning Fidelity..."
+python experiments/evaluation_module/grade_images/plot_conditioning_fidelity.py
+
 echo ""
 echo "  Pipeline Complete! Results in results/clip_analysis/ "

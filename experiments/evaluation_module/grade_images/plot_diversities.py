@@ -21,12 +21,6 @@ def main():
         return
 
     classes = ["toaster", "hair_drier"]
-    
-    # ── Group techniques by class ────────────────────────────────────────
-    # class_data[cls_name] = {
-    #     "real_structural": [...],  "real_semantic": [...],
-    #     "techniques": [ { "tech": "IP-Adapter", "synth_structural": [...], "synth_semantic": [...] }, ... ]
-    # }
     class_data = OrderedDict()
     
     for cls in classes:
@@ -168,12 +162,11 @@ def main():
         ax.set_xlim(x_lo, x_hi)
         ax2.set_xlim(x_lo, x_hi)
         
-        # ── X-axis: only label & tick on the bottom row ──────────────────
+        # ── X-axis: only label on the bottom row, but keep ticks ─────────
         if is_bottom_row:
             ax.set_xlabel(xlabel, fontsize=16, fontweight='bold')
         else:
             ax.set_xlabel('')
-            ax.tick_params(axis='x', labelbottom=False)
         
         # ── Style & combined legend ──────────────────────────────────────
         ax.set_title(title, fontsize=12, pad=15, fontweight='bold')

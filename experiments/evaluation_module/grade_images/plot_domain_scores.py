@@ -127,7 +127,7 @@ def main():
         
         # Only show x-axis tick labels on the bottom row
         if i < 2:
-            ax.tick_params(axis='x', labelbottom=False)
+            pass
         
         # Combine legends from both axes
         lines, labels = ax.get_legend_handles_labels()
