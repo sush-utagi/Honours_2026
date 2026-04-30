@@ -66,14 +66,11 @@ def main():
         print("No raw data found to plot. Have you re-run analyse.py to generate .json arrays?")
         return
 
-    n_rows = len(configs)
-    
-    fig, axes = plt.subplots(n_rows, 1, figsize=(10, 5 * n_rows))
-    
-    if n_rows == 1:
-        axes = np.array([axes])
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    axes_flat = axes.flatten()
 
     for i, config in enumerate(configs):
+        if i >= 4: break
         label = config["label"]
         paths = config["paths"]
         
@@ -82,7 +79,7 @@ def main():
         
         print(f"[data] {label}: Real instances={len(real_scores)}, Synthetic instances={len(synth_scores)}")
         
-        ax = axes[i]
+        ax = axes_flat[i]
         
         # Determine the shared binning across both so they align perfectly
         min_val = min(np.min(real_scores), np.min(synth_scores))
@@ -99,9 +96,10 @@ def main():
         x_fit = np.linspace(bins[0], bins[-1], 200)
         
         # Primary axis for Real Data
-        ax.hist(real_scores, bins=bins, alpha=0.5, color=color_real, label='Real')
-        ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold')
-        ax.tick_params(axis='y', labelcolor=text_color_real)
+        ax.hist(real_scores, bins=bins, alpha=0.15, color=color_real, label='Real')
+        ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold', fontsize=14)
+        ax.tick_params(axis='y', labelcolor=text_color_real, labelsize=12)
+        ax.tick_params(axis='x', labelsize=12)
         
         real_mean, real_std = np.mean(real_scores), np.std(real_scores)
         real_pdf = norm.pdf(x_fit, real_mean, real_std) * len(real_scores) * bin_width
@@ -109,9 +107,9 @@ def main():
         
         # Create independent secondary axis for Synthetic Data
         ax2 = ax.twinx()
-        ax2.hist(synth_scores, bins=bins, alpha=0.4, color=color_synth, label='Synthetic')
-        ax2.set_ylabel("Count (Synthetic)", color=text_color_synth, fontweight='bold')
-        ax2.tick_params(axis='y', labelcolor=text_color_synth)
+        ax2.hist(synth_scores, bins=bins, alpha=0.12, color=color_synth, label='Synthetic')
+        ax2.set_ylabel("Count (Synthetic)", color=text_color_synth, fontweight='bold', fontsize=14)
+        ax2.tick_params(axis='y', labelcolor=text_color_synth, labelsize=12)
         
         synth_mean, synth_std = np.mean(synth_scores), np.std(synth_scores)
         synth_pdf = norm.pdf(x_fit, synth_mean, synth_std) * len(synth_scores) * bin_width
@@ -124,18 +122,26 @@ def main():
         ax2.axvline(synth_mean, color='#00695C', linestyle='--', linewidth=2.5, zorder=5, label=f'Synth Mean: {synth_mean:.1f}')
         
         # Formating & Titles
-        ax.set_title(f"{label} - Domain Level CLIP Scores", fontsize=12, pad=15, fontweight='bold')
-        ax.set_xlabel("CLIP Score (higher is better aligned with domain)", fontsize=11)
+        ax.set_title(f"{label} - Domain Level CLIP Scores", fontsize=16, pad=15, fontweight='bold')
         ax.grid(axis="y", alpha=0.15)
+        
+        # Only show x-axis tick labels on the bottom row
+        if i < 2:
+            ax.tick_params(axis='x', labelbottom=False)
         
         # Combine legends from both axes
         lines, labels = ax.get_legend_handles_labels()
         lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines + lines2, labels + labels2, loc="upper left", framealpha=0.9, fontsize=9)
+        ax.legend(lines + lines2, labels + labels2, loc="upper left", framealpha=0.9, fontsize=11)
 
-    fig.tight_layout(h_pad=3.0)
+    # Hide any unused subplots
+    for j in range(len(configs), 4):
+        fig.delaxes(axes_flat[j])
+
+    fig.tight_layout(pad=3.0, rect=[0, 0.05, 1, 1])
+    fig.supxlabel("CLIP Score (higher is better aligned with domain)", fontsize=22, fontweight='bold')
     
-    out_path = os.path.join(base_dir, "domain_scores_comparison.png")
+    out_path = os.path.join(base_dir, "domain_scores_comparison_2x2.png")
     fig.savefig(out_path, dpi=300, bbox_inches='tight')
     plt.close(fig)
     print(f"\nSuccessfully generated histogram column: {out_path}")

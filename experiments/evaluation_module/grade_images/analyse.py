@@ -498,6 +498,7 @@ def _save_extremes(
     source_label: str,
     class_name: str,
     out_dir: Path,
+    technique_label: str = "",
     n: int = 5,
 ) -> None:
     indexed = [
@@ -514,17 +515,19 @@ def _save_extremes(
     best = indexed[-n:][::-1]  # highest first
 
     fig, axes = plt.subplots(2, n, figsize=(3.5 * n, 9.0))
-    fig.suptitle(f"{class_name} — {source_label} extremes (domain CLIP score)", fontsize=14, fontweight="bold", y=0.98)
+    title_text = f'"a photo of a {class_name}"'
+    if technique_label:
+        title_text += f" ({technique_label})"
+    fig.suptitle(title_text, fontsize=28, fontweight="bold", y=0.97)
 
     for col, (idx, score) in enumerate(best):
         ax = axes[0, col]
         img = plt.imread(str(image_paths[idx]))
         ax.imshow(img)
-        ax.set_title(f"#{col+1} Best", fontsize=9, color="#2E7D32", fontweight="bold")
         ax.text(
             0.5, -0.02, f"{score:.1f}",
             transform=ax.transAxes, ha="center", va="top",
-            fontsize=12, fontweight="bold",
+            fontsize=24, fontweight="bold",
             bbox=dict(boxstyle="round,pad=0.2", facecolor="#C8E6C9", edgecolor="#2E7D32", alpha=0.9),
         )
         ax.axis("off")
@@ -533,16 +536,15 @@ def _save_extremes(
         ax = axes[1, col]
         img = plt.imread(str(image_paths[idx]))
         ax.imshow(img)
-        ax.set_title(f"#{col+1} Worst", fontsize=9, color="#C62828", fontweight="bold")
         ax.text(
             0.5, -0.02, f"{score:.1f}",
             transform=ax.transAxes, ha="center", va="top",
-            fontsize=12, fontweight="bold",
+            fontsize=24, fontweight="bold",
             bbox=dict(boxstyle="round,pad=0.2", facecolor="#FFCDD2", edgecolor="#C62828", alpha=0.9),
         )
         ax.axis("off")
 
-    fig.tight_layout(rect=[0, 0.02, 1, 0.95], h_pad=3.0)
+    fig.tight_layout(rect=[0, 0.02, 1, 0.96], h_pad=6.0)
     out_path = out_dir / f"{source_label}_extremes.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)
@@ -614,6 +616,7 @@ def _save_umap_plot(
     metrics: Dict[str, float],
     class_name: str,
     out_path: Path,
+    train_is_ref: List[bool] = None,
 ) -> None:
     fig, ax = plt.subplots(figsize=(11, 8.5))
     C_TRAIN = "#4A90D9"   # Blue
@@ -632,7 +635,14 @@ def _save_umap_plot(
                 ax.plot(pts[hull_verts, 0], pts[hull_verts, 1], color=color, alpha=0.35, linewidth=1.2, zorder=2)
             except Exception:
                 pass  # degenerate hull (collinear points, etc.)
-    ax.scatter(train_2d[:, 0], train_2d[:, 1], c=C_TRAIN, marker="o", s=35, alpha=0.72, edgecolors="white", linewidths=0.3, label=f"Real Train (n={len(train_2d):,})", zorder=3)
+    
+    if train_is_ref is not None and any(train_is_ref):
+        train_is_ref_arr = np.array(train_is_ref)
+        ax.scatter(train_2d[~train_is_ref_arr, 0], train_2d[~train_is_ref_arr, 1], c=C_TRAIN, marker="o", s=35, alpha=0.72, edgecolors="white", linewidths=0.3, label=f"Real Train (n={np.sum(~train_is_ref_arr):,})", zorder=3)
+        ax.scatter(train_2d[train_is_ref_arr, 0], train_2d[train_is_ref_arr, 1], c="#D32F2F", marker="*", s=250, alpha=1.0, edgecolors="black", linewidths=0.5, label=f"Conditioning Inputs (n={np.sum(train_is_ref_arr):,})", zorder=5)
+    else:
+        ax.scatter(train_2d[:, 0], train_2d[:, 1], c=C_TRAIN, marker="o", s=35, alpha=0.72, edgecolors="white", linewidths=0.3, label=f"Real Train (n={len(train_2d):,})", zorder=3)
+        
     if len(val_2d) > 0:
         ax.scatter(val_2d[:, 0], val_2d[:, 1], c=C_VAL, marker="D", s=32, alpha=0.72, edgecolors="white", linewidths=0.3, label=f"Real Val (n={len(val_2d):,})", zorder=3)
     ax.scatter(synth_2d[:, 0], synth_2d[:, 1], c=C_SYNTH, marker="^", s=40, alpha=0.72, edgecolors="white", linewidths=0.3, label=f"Synthetic (n={len(synth_2d):,})", zorder=3)
@@ -861,15 +871,17 @@ def main() -> int:
 
     suffix = "syn"
     tech_sources = []
-    if synth_dir: tech_sources.append(synth_dir.name.lower())
+    if synth_dir:
+        tech_sources.append(synth_dir.name.lower())
+        tech_sources.append(str(synth_dir).lower())
     if prompt_json_path: tech_sources.append(prompt_json_path.name.lower())
 
     for s in tech_sources:
-        parts = s.split('_')
-        if "ip" in parts: 
+        parts = s.replace("/", "_").replace("\\", "_").split('_')
+        if "ip" in parts or "ip-adapter" in s: 
             suffix = "ip"
             break
-        if "cn" in parts:
+        if "cn" in parts or "controlnet" in s:
             suffix = "cn"
             break
         if "ti" in parts:
@@ -887,7 +899,7 @@ def main() -> int:
         else:
             out_dir = base_class_dir / f"{class_folder}_{suffix}"
 
-    print(f"\n[analyse] extracting CLIP embeddings for all relevant sets …")
+    print(f"\n[analyse] extracting CLIP embeddings for all relevant sets ...")
     
     train_embeds: np.ndarray = np.empty((0, 768))
     train_valid_idx: List[int] = []
@@ -1026,10 +1038,11 @@ def main() -> int:
         )
 
     # -- Save best/worst image panels -----------------------------------------
+    technique_str = "ControlNet" if suffix == "cn" else "IP-Adapter" if suffix == "ip" else "Synthetic"
     if do_real and real_domain_scores:
-        _save_extremes(real_paths, real_domain_scores, "real", class_name, out_dir)
+        _save_extremes(real_paths, real_domain_scores, "real", class_name, out_dir, technique_label="Real Dataset")
     if do_synth and synth_domain_scores:
-        _save_extremes(synth_paths, synth_domain_scores, "synthetic", class_name, out_dir)
+        _save_extremes(synth_paths, synth_domain_scores, "synthetic", class_name, out_dir, technique_label=technique_str)
 
     # -- UMAP distributional visualization ------------------------------------
     if len(train_embeds) > 0 and len(synth_embeds) > 0 and not args.no_umap:
@@ -1215,11 +1228,35 @@ def main() -> int:
         umap_metrics_path = _raw_data_path(out_dir, f"umap_metrics_{suffix}.json")
         _save_umap_metrics(umap_metrics, class_name, umap_metrics_path)
 
+        # Collect condition references to highlight in UMAP
+        ref_filenames = set()
+        c_name_us = class_name.replace(' ', '_')
+        if suffix == "cn":
+            cn_file = _repo_root() / "data_generation_backend" / "prompt_generation" / "controlnet_candidates" / f"{c_name_us}_candidates.txt"
+            if cn_file.exists():
+                with open(cn_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line:
+                            ref_filenames.add(Path(line).name)
+        elif suffix == "ip":
+            ip_file = _repo_root() / "data_generation_backend" / "prompt_generation" / "selected_references" / c_name_us / "metadata.json"
+            if ip_file.exists():
+                with open(ip_file, "r", encoding="utf-8") as f:
+                    ip_data = json.load(f)
+                for ref in ip_data.get("references", []):
+                    ref_filenames.add(ref.get("filename", ""))
+                    
+        train_is_ref = []
+        for i in train_valid_idx:
+            train_is_ref.append(real_paths[i].name in ref_filenames)
+
         # Read back the persisted metrics so the plot annotation matches the raw-data artifact.
         _save_umap_plot(
             train_2d, val_2d, synth_2d,
             dataset_label, _load_umap_metrics(umap_metrics_path),
             class_name, out_dir / f"umap_clip_{suffix}.png",
+            train_is_ref=train_is_ref,
         )
 
     print(f"\n[analyse] all outputs written to {out_dir}/")

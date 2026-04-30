@@ -2,6 +2,7 @@ import os
 import json
 import matplotlib.pyplot as plt
 import numpy as np
+from collections import OrderedDict
 from scipy.stats import norm
 
 def _load_json_list(path):
@@ -21,12 +22,22 @@ def main():
 
     classes = ["toaster", "hair_drier"]
     
-    configs = []
+    # ── Group techniques by class ────────────────────────────────────────
+    # class_data[cls_name] = {
+    #     "real_structural": [...],  "real_semantic": [...],
+    #     "techniques": [ { "tech": "IP-Adapter", "synth_structural": [...], "synth_semantic": [...] }, ... ]
+    # }
+    class_data = OrderedDict()
     
     for cls in classes:
         cls_dir = os.path.join(base_dir, cls)
         if not os.path.isdir(cls_dir):
             continue
+        
+        cls_name = cls.replace('_', ' ').title()
+        real_struct = None
+        real_sem = None
+        techniques = []
         
         for tech_dir_name in sorted(os.listdir(cls_dir)):
             tech_dir = os.path.join(cls_dir, tech_dir_name)
@@ -47,9 +58,6 @@ def main():
                 tech = 'Textual Inversion'
             else:
                 tech = tech_raw.upper()
-                
-            cls_name = cls.replace('_', ' ').title()
-            label = f"{cls_name} ({tech})"
             
             paths = {
                 "real_structural": os.path.join(raw_dir, "real_structural_distances.json"),
@@ -58,91 +66,148 @@ def main():
                 "synth_semantic": os.path.join(raw_dir, "synth_semantic_distances.json"),
             }
             
-            if all(os.path.exists(p) for p in paths.values()):
-                configs.append({
-                    "label": label,
-                    "paths": paths
-                })
+            if not all(os.path.exists(p) for p in paths.values()):
+                continue
+            
+            # Real data is the same across techniques for a given class;
+            # load it from the first technique we encounter.
+            if real_struct is None:
+                real_struct = _load_json_list(paths["real_structural"])
+                real_sem = _load_json_list(paths["real_semantic"])
+            
+            techniques.append({
+                "tech": tech,
+                "synth_structural": _load_json_list(paths["synth_structural"]),
+                "synth_semantic": _load_json_list(paths["synth_semantic"]),
+            })
+        
+        if real_struct is not None and techniques:
+            class_data[cls_name] = {
+                "real_structural": real_struct,
+                "real_semantic": real_sem,
+                "techniques": techniques,
+            }
 
-    if not configs:
+    if not class_data:
         print("No raw data found to plot. Have you re-run analyse.py to generate .json arrays?")
         return
 
-    n_rows = len(configs)
-    n_cols = 2
+    # ── Colour palette ───────────────────────────────────────────────────
+    # Real keeps the original blue.
+    # Each technique gets its own warm colour for its synthetic distribution.
+    color_real      = '#4A90D9'
+    text_color_real = '#1565C0'
+    curve_color_real = '#1565C0'
     
-    # Increase the figure size a bit to perfectly fit the twin axes space without overlap
+    synth_palette = [
+        {'fill': '#E8833A', 'curve': '#D84315', 'text': '#BF360C', 'name_suffix': ''},   # Orange
+        {'fill': '#AB47BC', 'curve': '#7B1FA2', 'text': '#6A1B9A', 'name_suffix': ''},   # Purple
+        {'fill': '#26A69A', 'curve': '#00796B', 'text': '#00695C', 'name_suffix': ''},   # Teal (spare)
+    ]
+
+    # ── Build figure ─────────────────────────────────────────────────────
+    n_rows = len(class_data)
+    n_cols = 2
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(15, 5 * n_rows))
     
     if n_rows == 1:
         axes = np.array([axes])
 
-    for i, config in enumerate(configs):
-        label = config["label"]
-        paths = config["paths"]
+    def plot_combined_hist(ax, real_data, synth_entries, bins, title, xlabel,
+                           is_bottom_row=True):
+        """
+        Plot Real on the primary y-axis and all synthetic sets on a shared
+        secondary y-axis, each with its own colour.
         
-        real_struct = _load_json_list(paths["real_structural"])
-        synth_struct = _load_json_list(paths["synth_structural"])
-        real_sem = _load_json_list(paths["real_semantic"])
-        synth_sem = _load_json_list(paths["synth_semantic"])
+        synth_entries: list of (tech_label, synth_data, palette_dict)
+        is_bottom_row: if False, x-axis label and tick labels are hidden
+        """
+        # ── Data-driven x-limits ─────────────────────────────────────────
+        all_values = list(real_data)
+        for _, sd, _ in synth_entries:
+            all_values.extend(sd)
+        x_min = min(all_values)
+        x_max = max(all_values)
+        margin = (x_max - x_min) * 0.08  # 8 % breathing room each side
+        x_lo = max(0.0, x_min - margin)
+        x_hi = x_max + margin
         
-        ax_struct = axes[i, 0]
-        ax_sem = axes[i, 1]
+        # Re-bin within the zoomed range
+        bins = np.linspace(x_lo, x_hi, 50)
+        bin_width = bins[1] - bins[0]
+        x_fit = np.linspace(x_lo, x_hi, 300)
         
-        def plot_dual_hist(ax, real_data, synth_data, bins, title, xlabel):
-            color_real = '#4A90D9'
-            color_synth = '#E8833A'
+        # ── Primary axis: Real ───────────────────────────────────────────
+        ax.hist(real_data, bins=bins, alpha=0.15, color=color_real, label='Real')
+        ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold')
+        ax.tick_params(axis='y', labelcolor=text_color_real)
+        
+        real_mean, real_std = np.mean(real_data), np.std(real_data)
+        real_pdf = norm.pdf(x_fit, real_mean, real_std) * len(real_data) * bin_width
+        ax.plot(x_fit, real_pdf, color=curve_color_real, linewidth=2.5, alpha=0.85, zorder=4)
+        
+        # ── Secondary axis: Synthetic sets ───────────────────────────────
+        ax2 = ax.twinx()
+        ax2.set_ylabel("Count (Synthetic)", fontweight='bold')
+        
+        for tech_label, synth_data, pal in synth_entries:
+            ax2.hist(synth_data, bins=bins, alpha=0.12, color=pal['fill'],
+                     label=f'Synth ({tech_label})')
             
-            text_color_real = '#1565C0'   # Dark Blue
-            text_color_synth = '#BF360C'  # Dark Orange/Rust
-            
-            bin_width = bins[1] - bins[0]
-            x_fit = np.linspace(bins[0], bins[-1], 200)
-            
-            # Primary axis for Real Data
-            ax.hist(real_data, bins=bins, alpha=0.5, color=color_real, label='Real')
-            ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold')
-            ax.tick_params(axis='y', labelcolor=text_color_real)
-            
-            real_mean, real_std = np.mean(real_data), np.std(real_data)
-            real_pdf = norm.pdf(x_fit, real_mean, real_std) * len(real_data) * bin_width
-            ax.plot(x_fit, real_pdf, color='#1565C0', linewidth=2.5, alpha=0.75, zorder=4)
-            
-            # Create independent secondary axis for Synthetic Data
-            ax2 = ax.twinx()
-            ax2.hist(synth_data, bins=bins, alpha=0.4, color=color_synth, label='Synthetic')
-            ax2.set_ylabel("Count (Synthetic)", color=text_color_synth, fontweight='bold')
-            ax2.tick_params(axis='y', labelcolor=text_color_synth)
-            
-            synth_mean, synth_std = np.mean(synth_data), np.std(synth_data)
-            synth_pdf = norm.pdf(x_fit, synth_mean, synth_std) * len(synth_data) * bin_width
-            ax2.plot(x_fit, synth_pdf, color='#D84315', linewidth=2.5, alpha=0.75, zorder=4)
-            
-            # Plot Real mean vertical dash ON AX2
-            ax2.axvline(real_mean, color='#1565C0', linestyle='--', linewidth=2, zorder=5, label=f'Real Mean: {real_mean:.3f}')
-            
-            # Plot Synth mean vertical dash
-            ax2.axvline(synth_mean, color='#D84315', linestyle='--', linewidth=2, zorder=5, label=f'Synth Mean: {synth_mean:.3f}')
-            
-            # Style & Labels
-            ax.set_title(title, fontsize=12, pad=15, fontweight='bold')
-            ax.set_xlabel(xlabel, fontsize=11)
-            ax.grid(axis="y", alpha=0.2)
-            
-            # We must coalesce both legends properly
-            lines, labels = ax.get_legend_handles_labels()
-            lines2, labels2 = ax2.get_legend_handles_labels()
-            ax.legend(lines + lines2, labels + labels2, loc="upper right", framealpha=0.9, fontsize=9)
+            s_mean, s_std = np.mean(synth_data), np.std(synth_data)
+            s_pdf = norm.pdf(x_fit, s_mean, s_std) * len(synth_data) * bin_width
+            ax2.plot(x_fit, s_pdf, color=pal['curve'], linewidth=2.5, alpha=0.85, zorder=4)
+            ax2.axvline(s_mean, color=pal['curve'], linestyle='--', linewidth=2, zorder=5,
+                        label=f'{tech_label} Mean: {s_mean:.3f}')
+        
+        # Real mean line (drawn on ax2 so it shares the x-range)
+        ax2.axvline(real_mean, color=curve_color_real, linestyle='--', linewidth=2, zorder=5,
+                    label=f'Real Mean: {real_mean:.3f}')
+        
+        # ── Zoom x-axis ──────────────────────────────────────────────────
+        ax.set_xlim(x_lo, x_hi)
+        ax2.set_xlim(x_lo, x_hi)
+        
+        # ── X-axis: only label & tick on the bottom row ──────────────────
+        if is_bottom_row:
+            ax.set_xlabel(xlabel, fontsize=16, fontweight='bold')
+        else:
+            ax.set_xlabel('')
+            ax.tick_params(axis='x', labelbottom=False)
+        
+        # ── Style & combined legend ──────────────────────────────────────
+        ax.set_title(title, fontsize=12, pad=15, fontweight='bold')
+        ax.grid(axis="y", alpha=0.2)
+        
+        lines, labels = ax.get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax.legend(lines + lines2, labels + labels2, loc="upper right", framealpha=0.9, fontsize=9)
 
-        # 1. Structural Diversity plotting
-        bins_struct = np.linspace(0.0, 1.2, 50)
-        plot_dual_hist(ax_struct, real_struct, synth_struct, bins_struct, 
-                       f"{label} - Structural Diversity (LPIPS)", "LPIPS Distance")
-                       
-        # 2. Semantic Diversity plotting
-        bins_sem = np.linspace(0.0, 1.0, 50)
-        plot_dual_hist(ax_sem, real_sem, synth_sem, bins_sem, 
-                       f"{label} - Semantic Diversity (CLIP)", "Cosine Distance")
+    # ── Iterate per class ────────────────────────────────────────────────
+    for row_idx, (cls_name, data) in enumerate(class_data.items()):
+        ax_struct = axes[row_idx, 0]
+        ax_sem    = axes[row_idx, 1]
+        is_last_row = (row_idx == n_rows - 1)
+        
+        # Build per-technique entries with palette assignment
+        synth_struct_entries = []
+        synth_sem_entries = []
+        for t_idx, t in enumerate(data["techniques"]):
+            pal = synth_palette[t_idx % len(synth_palette)]
+            synth_struct_entries.append((t["tech"], t["synth_structural"], pal))
+            synth_sem_entries.append((t["tech"], t["synth_semantic"], pal))
+        
+        # bins arg is now only a placeholder; plot_combined_hist recomputes
+        # bins from the actual data range.
+        plot_combined_hist(ax_struct, data["real_structural"], synth_struct_entries,
+                           None,
+                           f"{cls_name} – Structural Diversity (LPIPS)", "LPIPS Distance",
+                           is_bottom_row=is_last_row)
+        
+        plot_combined_hist(ax_sem, data["real_semantic"], synth_sem_entries,
+                           None,
+                           f"{cls_name} – Semantic Diversity (CLIP)", "Cosine Distance",
+                           is_bottom_row=is_last_row)
 
     fig.tight_layout(h_pad=3.0)  # slightly more vertical padding for readability
     
