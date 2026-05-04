@@ -514,11 +514,11 @@ def _save_extremes(
     worst = indexed[:n]
     best = indexed[-n:][::-1]  # highest first
 
-    fig, axes = plt.subplots(2, n, figsize=(3.5 * n, 9.0))
+    fig, axes = plt.subplots(2, n, figsize=(3.5 * n, 7.5))
     title_text = f'"a photo of a {class_name}"'
     if technique_label:
         title_text += f" ({technique_label})"
-    fig.suptitle(title_text, fontsize=28, fontweight="bold", y=0.97)
+    fig.suptitle(title_text, fontsize=28, fontweight="bold", y=0.99)
 
     for col, (idx, score) in enumerate(best):
         ax = axes[0, col]
@@ -544,7 +544,7 @@ def _save_extremes(
         )
         ax.axis("off")
 
-    fig.tight_layout(rect=[0, 0.02, 1, 0.96], h_pad=6.0)
+    fig.tight_layout(rect=[0, 0.03, 1, 0.94], h_pad=3.0)
     out_path = out_dir / f"{source_label}_extremes.png"
     fig.savefig(out_path, dpi=150)
     plt.close(fig)

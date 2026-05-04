@@ -86,9 +86,9 @@ pdflatex -interaction=nonstopmode -halt-on-error "$TEX_FILE" > /dev/null 2>&1 ||
 	exit 1
 }
 
-# ── Copy to project root ────────────────────────────────────────
+# ── Move to project root (keep only one copy) ───────────────────
 if [[ -f "$PDF_FILE" ]]; then
-    cp "$PDF_FILE" "$OUTPUT_PDF"
+    mv "$PDF_FILE" "$OUTPUT_PDF"
     info "Slides compiled successfully → ${OUTPUT_PDF}"
 else
     error "Build seemed to succeed but $PDF_FILE was not produced."
