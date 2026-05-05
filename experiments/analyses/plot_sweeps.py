@@ -26,58 +26,73 @@ def create_figure_for_sweep(sweep_dir, save_path, technique):
         return
         
     # Load all images
-    imgs = []
-    labels = []
+    input_img = mpimg.imread(input_image_path) if input_image_path else None
+    synth_imgs = []
+    synth_labels = []
     
-    if input_image_path:
-        imgs.append(mpimg.imread(input_image_path))
-        labels.append("Input")
-        
     for fname in gen_images:
-        imgs.append(mpimg.imread(os.path.join(sweep_dir, fname)))
-        labels.append(f"{extract_value(fname, technique):.1f}")
+        synth_imgs.append(mpimg.imread(os.path.join(sweep_dir, fname)))
+        synth_labels.append(f"{extract_value(fname, technique):.1f}")
         
-    widths = [img.shape[1] for img in imgs]
+    n_synth = len(synth_imgs)
+    cols_synth = (n_synth + 1) // 2
     
-    # To handle spacer, we insert a dummy width
-    if input_image_path:
-        # Spacer width is 20% of an average generated image's width
-        avg_w = sum(widths[1:]) / len(widths[1:]) if len(widths) > 1 else widths[0]
-        spacer_w = avg_w * 0.2
-        plot_widths = [widths[0], spacer_w] + widths[1:]
-    else:
-        plot_widths = widths
+    # Calculate widths for GridSpec
+    avg_synth_w = sum(img.shape[1] for img in synth_imgs) / n_synth
+    spacer_w = avg_synth_w * 0.2
+    
+    # We'll use a fixed width ratio for the synth cols based on average width
+    # to keep the grid aligned even if images vary slightly
+    input_w = input_img.shape[1] if input_img is not None else 0
+    
+    plot_widths = []
+    if input_img is not None:
+        plot_widths.append(input_w)
+        plot_widths.append(spacer_w)
+    
+    for _ in range(cols_synth):
+        plot_widths.append(avg_synth_w)
         
     total_w = sum(plot_widths)
-    max_h = max([img.shape[0] for img in imgs])
-    
-    # We set figsize proportional to total pixels
-    # Let 100 pixels = 1 inch
+    max_h_single = max(img.shape[0] for img in synth_imgs)
+    if input_img is not None:
+        max_h_single = max(max_h_single, input_img.shape[0] / 2)
+        
     fig_w = total_w / 100.0
-    fig_h = max_h / 100.0 * 1.3 # add 30% space for titles
+    # Height for 2 rows + spacing for labels
+    fig_h = (max_h_single * 2) / 100.0 * 1.4 
     
     fig = plt.figure(figsize=(fig_w, fig_h))
+    gs = gridspec.GridSpec(2, len(plot_widths), width_ratios=plot_widths)
+    # Significantly reduced hspace for a tight vertical fit
+    gs.update(wspace=0.0, hspace=0.1, left=0.0, right=1.0, bottom=0.05, top=0.9)
     
-    gs = gridspec.GridSpec(1, len(plot_widths), width_ratios=plot_widths)
-    gs.update(wspace=0.0, hspace=0.0, left=0.0, right=1.0, bottom=0.0, top=0.85)
-    
-    ax_idx = 0
-    for i, (img, label) in enumerate(zip(imgs, labels)):
-        if i == 1 and input_image_path:
-            # Add spacer
-            ax_spacer = fig.add_subplot(gs[ax_idx])
-            ax_spacer.axis('off')
-            ax_idx += 1
-            
-        ax = fig.add_subplot(gs[ax_idx])
-        ax.imshow(img, aspect='equal')
-        ax.axis('off')
-        ax.text(0.5, -0.05, label, ha='center', va='top', transform=ax.transAxes, fontsize=40, fontweight='bold')
-        ax_idx += 1
+    # Plot Input Image (spanning both rows)
+    if input_img is not None:
+        tech_name = "IP-Adapter" if technique == "ip" else "ControlNet"
+        ax_input = fig.add_subplot(gs[:, 0])
+        ax_input.imshow(input_img, aspect='equal')
+        ax_input.axis('off')
+        ax_input.text(0.5, -0.04, f"Input ({tech_name})", ha='center', va='top', transform=ax_input.transAxes, fontsize=40, fontweight='bold')
         
-    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.02, dpi=300)
+        # Spacer
+        ax_spacer = fig.add_subplot(gs[:, 1])
+        ax_spacer.axis('off')
+
+    # Plot Synthetic Images
+    start_col = 2 if input_img is not None else 0
+    for i in range(n_synth):
+        row = 0 if i < cols_synth else 1
+        col = start_col + (i % cols_synth)
+        
+        ax = fig.add_subplot(gs[row, col])
+        ax.imshow(synth_imgs[i], aspect='equal')
+        ax.axis('off')
+        ax.text(0.5, -0.04, synth_labels[i], ha='center', va='top', transform=ax.transAxes, fontsize=40, fontweight='bold')
+        
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.1, dpi=300)
     plt.close(fig)
-    print(f"Saved figure: {save_path}")
+    print(f"Saved 2-row figure: {save_path}")
 
 def main():
     parser = argparse.ArgumentParser(description="Plot image grid for parameter sweeps.")
