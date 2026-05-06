@@ -108,13 +108,9 @@ def main():
         axes = np.array([axes])
 
     def plot_combined_hist(ax, real_data, synth_entries, bins, title, xlabel,
-                           is_bottom_row=True):
+                           is_bottom_row=True, show_ylabel=True):
         """
-        Plot Real on the primary y-axis and all synthetic sets on a shared
-        secondary y-axis, each with its own colour.
-        
-        synth_entries: list of (tech_label, synth_data, palette_dict)
-        is_bottom_row: if False, x-axis label and tick labels are hidden
+        Plot Real and all synthetic sets on a shared density axis.
         """
         # ── Data-driven x-limits ─────────────────────────────────────────
         all_values = list(real_data)
@@ -128,39 +124,33 @@ def main():
         
         # Re-bin within the zoomed range
         bins = np.linspace(x_lo, x_hi, 50)
-        bin_width = bins[1] - bins[0]
         x_fit = np.linspace(x_lo, x_hi, 300)
         
-        # ── Primary axis: Real ───────────────────────────────────────────
-        ax.hist(real_data, bins=bins, alpha=0.15, color=color_real, label='Real')
-        ax.set_ylabel("Count (Real)", color=text_color_real, fontweight='bold')
-        ax.tick_params(axis='y', labelcolor=text_color_real)
+        # ── Shared axis: Density ─────────────────────────────────────────
+        ax.hist(real_data, bins=bins, alpha=0.15, color=color_real, label='Real', density=True)
+        if show_ylabel:
+            ax.set_ylabel("Density", fontsize=14, fontweight='bold')
         
         real_mean, real_std = np.mean(real_data), np.std(real_data)
-        real_pdf = norm.pdf(x_fit, real_mean, real_std) * len(real_data) * bin_width
+        real_pdf = norm.pdf(x_fit, real_mean, real_std)
         ax.plot(x_fit, real_pdf, color=curve_color_real, linewidth=2.5, alpha=0.85, zorder=4)
         
-        # ── Secondary axis: Synthetic sets ───────────────────────────────
-        ax2 = ax.twinx()
-        ax2.set_ylabel("Count (Synthetic)", fontweight='bold')
-        
         for tech_label, synth_data, pal in synth_entries:
-            ax2.hist(synth_data, bins=bins, alpha=0.12, color=pal['fill'],
-                     label=f'Synth ({tech_label})')
+            ax.hist(synth_data, bins=bins, alpha=0.12, color=pal['fill'],
+                     label=f'Synth ({tech_label})', density=True)
             
             s_mean, s_std = np.mean(synth_data), np.std(synth_data)
-            s_pdf = norm.pdf(x_fit, s_mean, s_std) * len(synth_data) * bin_width
-            ax2.plot(x_fit, s_pdf, color=pal['curve'], linewidth=2.5, alpha=0.85, zorder=4)
-            ax2.axvline(s_mean, color=pal['curve'], linestyle='--', linewidth=2, zorder=5,
+            s_pdf = norm.pdf(x_fit, s_mean, s_std)
+            ax.plot(x_fit, s_pdf, color=pal['curve'], linewidth=2.5, alpha=0.85, zorder=4)
+            ax.axvline(s_mean, color=pal['curve'], linestyle='--', linewidth=2, zorder=5,
                         label=f'{tech_label} Mean: {s_mean:.3f}')
         
-        # Real mean line (drawn on ax2 so it shares the x-range)
-        ax2.axvline(real_mean, color=curve_color_real, linestyle='--', linewidth=2, zorder=5,
+        # Real mean line
+        ax.axvline(real_mean, color=curve_color_real, linestyle='--', linewidth=2, zorder=5,
                     label=f'Real Mean: {real_mean:.3f}')
         
         # ── Zoom x-axis ──────────────────────────────────────────────────
         ax.set_xlim(x_lo, x_hi)
-        ax2.set_xlim(x_lo, x_hi)
         
         # ── X-axis: only label on the bottom row, but keep ticks ─────────
         if is_bottom_row:
@@ -172,9 +162,7 @@ def main():
         ax.set_title(title, fontsize=12, pad=15, fontweight='bold')
         ax.grid(axis="y", alpha=0.2)
         
-        lines, labels = ax.get_legend_handles_labels()
-        lines2, labels2 = ax2.get_legend_handles_labels()
-        ax.legend(lines + lines2, labels + labels2, loc="upper right", framealpha=0.9, fontsize=9)
+        ax.legend(loc="upper right", framealpha=0.9, fontsize=9)
 
     # ── Iterate per class ────────────────────────────────────────────────
     for row_idx, (cls_name, data) in enumerate(class_data.items()):
@@ -195,12 +183,12 @@ def main():
         plot_combined_hist(ax_struct, data["real_structural"], synth_struct_entries,
                            None,
                            f"{cls_name} – Structural Diversity (LPIPS)", "LPIPS Distance",
-                           is_bottom_row=is_last_row)
+                           is_bottom_row=is_last_row, show_ylabel=True)
         
         plot_combined_hist(ax_sem, data["real_semantic"], synth_sem_entries,
                            None,
                            f"{cls_name} – Semantic Diversity (CLIP)", "Cosine Distance",
-                           is_bottom_row=is_last_row)
+                           is_bottom_row=is_last_row, show_ylabel=False)
 
     fig.tight_layout(h_pad=3.0)  # slightly more vertical padding for readability
     
