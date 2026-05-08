@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────────────────────────
-# build_seminar_slides.sh — Compile the Honours seminar slides and copy
+# build_seminar_slides.sh — Compile the Honours seminar slides and move
 #                           the PDF to the project root.
 #
 # Usage:
