@@ -94,11 +94,114 @@ def create_figure_for_sweep(sweep_dir, save_path, technique):
     plt.close(fig)
     print(f"Saved 2-row figure: {save_path}")
 
+def create_thesis_figure(base_dir, save_path, technique):
+    """Create a single compact figure with all sweeps stacked as rows.
+    
+    Layout:
+        - Left column: real/input images stacked vertically, single "Real" label at bottom
+        - Right columns: synthetic images in a single row per sweep, no inter-image padding
+        - Strength labels only on the bottom row
+    """
+    param_key = "ips" if technique == "ip" else "cs"
+    
+    # Collect all sweep subdirectories and their data
+    sweep_data = []
+    for subdir in sorted(os.listdir(base_dir)):
+        sweep_dir = os.path.join(base_dir, subdir)
+        if not os.path.isdir(sweep_dir):
+            continue
+            
+        input_images = glob.glob(os.path.join(sweep_dir, "input.*"))
+        input_image_path = input_images[0] if input_images else None
+        
+        gen_images = [fp for fp in os.listdir(sweep_dir)
+                      if f"_{param_key}" in fp and fp.lower().endswith((".png", ".jpg", ".jpeg"))]
+        gen_images.sort(key=lambda x: extract_value(x, technique))
+        
+        if not gen_images:
+            print(f"Skipping {sweep_dir}, no generated images found.")
+            continue
+        
+        input_img = mpimg.imread(input_image_path) if input_image_path else None
+        synth_imgs = [mpimg.imread(os.path.join(sweep_dir, f)) for f in gen_images]
+        synth_labels = [f"{extract_value(f, technique):.1f}" for f in gen_images]
+        
+        sweep_data.append({
+            "name": subdir,
+            "input_img": input_img,
+            "synth_imgs": synth_imgs,
+            "synth_labels": synth_labels,
+        })
+    
+    if not sweep_data:
+        print("No sweep data found.")
+        return
+    
+    n_rows = len(sweep_data)
+    n_synth = len(sweep_data[0]["synth_imgs"])  # assume consistent across sweeps
+    has_input = any(s["input_img"] is not None for s in sweep_data)
+    
+    # Build GridSpec columns: [input | spacer | synth_0 | synth_1 | ... | synth_n-1]
+    spacer_ratio = 0.15  # thin gap between real and synthetic columns
+    if has_input:
+        n_cols = 1 + 1 + n_synth  # input + spacer + synths
+        width_ratios = [1, spacer_ratio] + [1] * n_synth
+    else:
+        n_cols = n_synth
+        width_ratios = [1] * n_cols
+    
+    # Figure sizing: make each cell roughly square, compact
+    cell_size = 1.6  # inches per cell
+    label_margin = 0.25  # extra space at the bottom for labels
+    fig_w = cell_size * (sum(width_ratios))
+    fig_h = cell_size * n_rows + label_margin
+    
+    fig = plt.figure(figsize=(fig_w, fig_h))
+    gs = gridspec.GridSpec(n_rows, n_cols, width_ratios=width_ratios,
+                           wspace=0.0, hspace=0.0)
+    # Tight margins: small bottom margin for the strength labels
+    gs.update(left=0.0, right=1.0, top=1.0, bottom=label_margin / fig_h)
+    
+    for row_idx, sweep in enumerate(sweep_data):
+        is_last_row = (row_idx == n_rows - 1)
+        
+        # -- Input image column --
+        if has_input:
+            ax_in = fig.add_subplot(gs[row_idx, 0])
+            if sweep["input_img"] is not None:
+                ax_in.imshow(sweep["input_img"], aspect='equal')
+            ax_in.axis('off')
+            if is_last_row:
+                ax_in.text(0.5, -0.06, "Real", ha='center', va='top',
+                           transform=ax_in.transAxes, fontsize=10, fontweight='bold')
+            # Spacer column (invisible)
+            ax_sp = fig.add_subplot(gs[row_idx, 1])
+            ax_sp.axis('off')
+        
+        # -- Synthetic images --
+        synth_start_col = 2 if has_input else 0
+        for i, img in enumerate(sweep["synth_imgs"]):
+            col = synth_start_col + i
+            ax = fig.add_subplot(gs[row_idx, col])
+            ax.imshow(img, aspect='equal')
+            ax.axis('off')
+            
+            # Strength label only on the bottom row
+            if is_last_row:
+                ax.text(0.5, -0.06, sweep["synth_labels"][i], ha='center', va='top',
+                        transform=ax.transAxes, fontsize=10, fontweight='bold')
+    
+    plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=300)
+    plt.close(fig)
+    print(f"Saved thesis figure ({n_rows} sweeps): {save_path}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Plot image grid for parameter sweeps.")
     parser.add_argument("--synth-root", type=str, required=True, help="Directory containing the sweep subdirectories (e.g. data_generation_outputs/ip_sweeps or data_generation_outputs/cn_sweeps).")
     parser.add_argument("--technique", type=str, choices=["ip", "cn"], required=True, help="Which technique to plot (ip for IP-Adapter, cn for ControlNet).")
     parser.add_argument("--out-dir", type=str, default="/Users/susheelutagi/Documents/GitHub/Honours_2026/experiments/figures", help="Directory to save the plots.")
+    parser.add_argument("--thesis", action="store_true", help="Thesis mode: combine all sweeps into a single compact figure with minimal padding.")
     args = parser.parse_args()
 
     base_dir = os.path.abspath(args.synth_root)
@@ -109,12 +212,17 @@ def main():
     if not os.path.exists(base_dir):
         print(f"Base directory does not exist: {base_dir}")
         return
-        
-    for subdir in os.listdir(base_dir):
-        sweep_dir = os.path.join(base_dir, subdir)
-        if os.path.isdir(sweep_dir):
-            save_path = os.path.join(out_dir, f"{subdir}_figure.png")
-            create_figure_for_sweep(sweep_dir, save_path, technique=args.technique)
+    
+    if args.thesis:
+        tech_label = "ip_adapter" if args.technique == "ip" else "controlnet"
+        save_path = os.path.join(out_dir, f"thesis_{tech_label}_sweeps.png")
+        create_thesis_figure(base_dir, save_path, technique=args.technique)
+    else:
+        for subdir in os.listdir(base_dir):
+            sweep_dir = os.path.join(base_dir, subdir)
+            if os.path.isdir(sweep_dir):
+                save_path = os.path.join(out_dir, f"{subdir}_figure.png")
+                create_figure_for_sweep(sweep_dir, save_path, technique=args.technique)
 
 if __name__ == "__main__":
     main()
