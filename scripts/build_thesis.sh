@@ -88,8 +88,7 @@ fi
 
 # ── Word Count ───────────────────────────────────────────────────
 if [[ -f "$TEX_FILE" ]]; then
-    # Extracts text between \mainmatter and \printbibliography, 
-    # removes comments, commands, and braces, then counts words.
-    WORD_COUNT=$(sed -n '/\\mainmatter/,/\\printbibliography/p' "$TEX_FILE" | sed 's/%.*//' | sed 's/\\[a-zA-Z]*//g' | sed 's/[{}]//g' | wc -w | tr -d ' ')
-    info "Approximate Word Count (Main Content): ${WORD_COUNT} words"
+    info "Calculating robust LaTeX word count …"
+    python3 "$PROJECT_ROOT/scripts/texcount.py" "$TEX_FILE"
 fi
+

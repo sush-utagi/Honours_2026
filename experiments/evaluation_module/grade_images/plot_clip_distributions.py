@@ -58,12 +58,12 @@ def main():
         ax.legend(fontsize=11)
         ax.grid(True, linestyle='--', alpha=0.6)
         
-    fig.suptitle("CLIP Score Distributions: Synthetic Toasters vs Hair Dryers", fontsize=16, fontweight='bold', y=1.05)
+    # fig.suptitle("CLIP Score Distributions: Synthetic Toasters vs Hair Dryers", fontsize=16, fontweight='bold', y=1.05)
     plt.tight_layout()
     
     out_path = os.path.join(out_dir, "clip_score_distributions_toaster_vs_hairdrier.png")
     fig.savefig(out_path, dpi=300, bbox_inches='tight')
-    print(f"Plot saved to {out_path}")
+    print(f"Plot saved to {out_path}") 
 
 if __name__ == "__main__":
     main()

@@ -173,7 +173,7 @@ def create_thesis_figure(base_dir, save_path, technique):
             ax_in.axis('off')
             if is_last_row:
                 ax_in.text(0.5, -0.06, "Real", ha='center', va='top',
-                           transform=ax_in.transAxes, fontsize=10, fontweight='bold')
+                           transform=ax_in.transAxes, fontsize=16, fontweight='bold')
             # Spacer column (invisible)
             ax_sp = fig.add_subplot(gs[row_idx, 1])
             ax_sp.axis('off')
@@ -189,7 +189,7 @@ def create_thesis_figure(base_dir, save_path, technique):
             # Strength label only on the bottom row
             if is_last_row:
                 ax.text(0.5, -0.06, sweep["synth_labels"][i], ha='center', va='top',
-                        transform=ax.transAxes, fontsize=10, fontweight='bold')
+                        transform=ax.transAxes, fontsize=16, fontweight='bold')
     
     plt.savefig(save_path, bbox_inches='tight', pad_inches=0.0, dpi=300)
     plt.close(fig)

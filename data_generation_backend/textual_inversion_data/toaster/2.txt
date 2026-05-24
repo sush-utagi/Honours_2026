@@ -1,1 +1,0 @@
-A green two-slot <coco-toaster>.
