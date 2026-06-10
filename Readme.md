@@ -1,4 +1,4 @@
-# Honours 2026 — Synthetic Data Augmentation for Image Classification
+# Honours 2026 — Synthetic Data Augmentation for Image Classification [UNDER CONSTRUCTION]
 
 ## Repository Structure
 
