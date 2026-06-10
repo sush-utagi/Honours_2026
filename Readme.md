@@ -67,13 +67,9 @@ Honours_2026/
 ├── results/                            # Saved evaluation results per model
 ├── logs/                               # Training logs
 ├── data_generation_outputs/            # Raw synthetic image outputs
-│
-├── gui/
-│   └── main.py                         # Tkinter GUI for interactive generation
-│
+││
 ├── thesis/                             # LaTeX source for the dissertation
 ├── requirements.txt                    # Python dependencies
-└── .env                                # Environment config (model IDs, cache paths)
 ```
 
 ### Key files at a glance
